@@ -31,7 +31,7 @@ importers:
         version: 4.7.0
       fullcalendar:
         specifier: ~3.10.5
-        version: 3.10.5(jquery@3.7.1)(moment@2.30.1)
+        version: 3.10.5(jquery@3.7.1)(moment@2.31.0)
       html2canvas:
         specifier: 0.5.0-beta4
         version: 0.5.0-beta4
@@ -57,8 +57,8 @@ importers:
         specifier: ^4.3.0
         version: 4.3.0
       moment:
-        specifier: ^2.30.1
-        version: 2.30.1
+        specifier: ^2.31.0
+        version: 2.31.0
       pace-js:
         specifier: ^1.2.4
         version: 1.2.4
@@ -71,7 +71,7 @@ importers:
         version: 5.0.5(rollup@4.62.2)
       eslint:
         specifier: ^9.39.4
-        version: 9.39.4
+        version: 9.39.4(supports-color@7.2.0)
       globals:
         specifier: ^16.5.0
         version: 16.5.0
@@ -527,6 +527,7 @@ packages:
 
   crypto-js@4.2.0:
     resolution: {integrity: sha512-KALDyEYgpY+Rlob/iriUtjV6d5Eq+Y191A5g4UqLAi8CyGP9N1+FdVbkc1SxKc2r4YAYqG8JzO2KGL+AizD70Q==}
+    deprecated: Active development of CryptoJS has been discontinued. This library is no longer maintained.
 
   debug@4.4.3:
     resolution: {integrity: sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==}
@@ -564,6 +565,7 @@ packages:
   eslint@9.39.4:
     resolution: {integrity: sha512-XoMjdBOwe/esVgEvLmNsD3IRHkm7fbKIUGvrleloJXUZgDHig2IPWNniv+GwjyJXzuNqVjlr5+4yVUZjycJwfQ==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+    deprecated: This version is no longer supported. Please see https://eslint.org/version-support for other options.
     hasBin: true
     peerDependencies:
       jiti: '*'
@@ -689,11 +691,11 @@ packages:
     resolution: {integrity: sha512-RHxMLp9lnKHGHRng9QFhRCMbYAcVpn69smSGcq3f36xjgVVWThj4qqLbTLlq7Ssj8B+fIQ1EuCEGI2lKsyQeIw==}
 
   jQuery-ui-Slider-Pips@https://codeload.github.com/simeydotme/jQuery-ui-Slider-Pips/tar.gz/a449269759a1e98920c88b3a5fb789fd6fc5b8f3:
-    resolution: {tarball: https://codeload.github.com/simeydotme/jQuery-ui-Slider-Pips/tar.gz/a449269759a1e98920c88b3a5fb789fd6fc5b8f3}
+    resolution: {gitHosted: true, integrity: sha512-AlzVOkaQKCdC/OW7JZ6EkgJrbDtjuvrpDlElkzsV2PltNSg/yO5kEyBYxuJEz8T0KREnsyCf+1L8+RWecSiK4A==, tarball: https://codeload.github.com/simeydotme/jQuery-ui-Slider-Pips/tar.gz/a449269759a1e98920c88b3a5fb789fd6fc5b8f3}
     version: 2.0.0
 
   jquery-contenteditable@https://codeload.github.com/makesites/jquery-contenteditable/tar.gz/6d850b825e282b0715f0f065a56bbe448d093e80:
-    resolution: {tarball: https://codeload.github.com/makesites/jquery-contenteditable/tar.gz/6d850b825e282b0715f0f065a56bbe448d093e80}
+    resolution: {gitHosted: true, integrity: sha512-ixUYWMZ3yq5ir5C10DO7mfQvOxZx6gKKVm9k6KQgK+pWSKqPNhqM2OeDkGS3MKlbtcyqvHQSR1L1VP+hraPMgA==, tarball: https://codeload.github.com/makesites/jquery-contenteditable/tar.gz/6d850b825e282b0715f0f065a56bbe448d093e80}
     version: 0.0.0
 
   jquery-ui-dist@1.13.3:
@@ -747,8 +749,8 @@ packages:
   minimatch@3.1.5:
     resolution: {integrity: sha512-VgjWUsnnT6n+NUk6eZq77zeFdpW2LWDzP6zFGrCbHXiYNul5Dzqk2HHQ5uFH2DNW5Xbp8+jVzaeNt94ssEEl4w==}
 
-  moment@2.30.1:
-    resolution: {integrity: sha512-uEmtNhbDOrWPFS+hdjFCBfy9f2YoyzRpwcl+DqpC6taX21FzsTLQVbMV/W7PzNSX6x/bhC1zA3c2UQ5NzH6how==}
+  moment@2.31.0:
+    resolution: {integrity: sha512-0acOTfMiWOheYS4eoWb80yYMb/JLvVv9SHbs2PehaDzfUG0Bw855SKyk0IKTnPGa5+U2bmi3W68l1+sGLX/pvw==}
 
   ms@2.1.3:
     resolution: {integrity: sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==}
@@ -980,17 +982,17 @@ snapshots:
   '@esbuild/win32-x64@0.27.7':
     optional: true
 
-  '@eslint-community/eslint-utils@4.9.1(eslint@9.39.4)':
+  '@eslint-community/eslint-utils@4.9.1(eslint@9.39.4(supports-color@7.2.0))':
     dependencies:
-      eslint: 9.39.4
+      eslint: 9.39.4(supports-color@7.2.0)
       eslint-visitor-keys: 3.4.3
 
   '@eslint-community/regexpp@4.12.2': {}
 
-  '@eslint/config-array@0.21.2':
+  '@eslint/config-array@0.21.2(supports-color@7.2.0)':
     dependencies:
       '@eslint/object-schema': 2.1.7
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@7.2.0)
       minimatch: 3.1.5
     transitivePeerDependencies:
       - supports-color
@@ -1003,10 +1005,10 @@ snapshots:
     dependencies:
       '@types/json-schema': 7.0.15
 
-  '@eslint/eslintrc@3.3.5':
+  '@eslint/eslintrc@3.3.5(supports-color@7.2.0)':
     dependencies:
       ajv: 6.15.0
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@7.2.0)
       espree: 10.4.0
       globals: 14.0.0
       ignore: 5.3.2
@@ -1199,9 +1201,11 @@ snapshots:
 
   crypto-js@4.2.0: {}
 
-  debug@4.4.3:
+  debug@4.4.3(supports-color@7.2.0):
     dependencies:
       ms: 2.1.3
+    optionalDependencies:
+      supports-color: 7.2.0
 
   deep-is@0.1.4: {}
 
@@ -1245,14 +1249,14 @@ snapshots:
 
   eslint-visitor-keys@4.2.1: {}
 
-  eslint@9.39.4:
+  eslint@9.39.4(supports-color@7.2.0):
     dependencies:
-      '@eslint-community/eslint-utils': 4.9.1(eslint@9.39.4)
+      '@eslint-community/eslint-utils': 4.9.1(eslint@9.39.4(supports-color@7.2.0))
       '@eslint-community/regexpp': 4.12.2
-      '@eslint/config-array': 0.21.2
+      '@eslint/config-array': 0.21.2(supports-color@7.2.0)
       '@eslint/config-helpers': 0.4.2
       '@eslint/core': 0.17.0
-      '@eslint/eslintrc': 3.3.5
+      '@eslint/eslintrc': 3.3.5(supports-color@7.2.0)
       '@eslint/js': 9.39.4
       '@eslint/plugin-kit': 0.4.1
       '@humanfs/node': 0.16.8
@@ -1262,7 +1266,7 @@ snapshots:
       ajv: 6.15.0
       chalk: 4.1.2
       cross-spawn: 7.0.6
-      debug: 4.4.3
+      debug: 4.4.3(supports-color@7.2.0)
       escape-string-regexp: 4.0.0
       eslint-scope: 8.4.0
       eslint-visitor-keys: 4.2.1
@@ -1337,10 +1341,10 @@ snapshots:
   fsevents@2.3.3:
     optional: true
 
-  fullcalendar@3.10.5(jquery@3.7.1)(moment@2.30.1):
+  fullcalendar@3.10.5(jquery@3.7.1)(moment@2.31.0):
     dependencies:
       jquery: 3.7.1
-      moment: 2.30.1
+      moment: 2.31.0
 
   glob-parent@6.0.2:
     dependencies:
@@ -1420,7 +1424,7 @@ snapshots:
     dependencies:
       brace-expansion: 1.1.14
 
-  moment@2.30.1: {}
+  moment@2.31.0: {}
 
   ms@2.1.3: {}
 
