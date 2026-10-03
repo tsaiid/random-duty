@@ -367,7 +367,7 @@ $(function() {
     // common calendar options and callback functions
     var nextMonth = moment().add(1, 'months');
     var nextTwoMonth = moment().add(2, 'months');
-    var calGoogleCalendarApiKey = 'AIzaSyCutCianVgUaWaCHeTDMk2VzyZ8bcNUdOY';
+    var calGoogleCalendarApiKey = import.meta.env.VITE_GOOGLE_CALENDAR_API_KEY;
     var calEventSources = [
         function(start, end, timezone, callback) {
             var calendarId = 'taiwan__zh-TW@holiday.calendar.google.com';

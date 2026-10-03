@@ -3,3 +3,5 @@ yarn.lock
 /vendor/
 /_site/
 /dist/
+.env
+.env.local
