@@ -367,12 +367,9 @@ $(function() {
     // common calendar options and callback functions
     var nextMonth = moment().add(1, 'months');
     var nextTwoMonth = moment().add(2, 'months');
-    var calGoogleCalendarApiKey = 'AIzaSyCutCianVgUaWaCHeTDMk2VzyZ8bcNUdOY';
     var calEventSources = [
         function(start, end, timezone, callback) {
-            var calendarId = 'taiwan__zh-TW@holiday.calendar.google.com';
-            var apiKey = calGoogleCalendarApiKey;
-            var url = 'https://www.googleapis.com/calendar/v3/calendars/' + encodeURIComponent(calendarId) + '/events';
+            var url = 'https://api.tsai.it/api/calendar/taiwan-holidays';
 
             // Mimic original gcal.js logic for date formatting
             var requestStart = start.clone();
@@ -389,11 +386,8 @@ $(function() {
                 url: url,
                 dataType: 'json',
                 data: {
-                    key: apiKey,
                     timeMin: requestStart.format(),
-                    timeMax: requestEnd.format(),
-                    singleEvents: true,
-                    maxResults: 9999
+                    timeMax: requestEnd.format()
                 },
                 success: function(doc) {
                     var events = [];
@@ -575,7 +569,6 @@ $(function() {
         firstDay: 1,
         theme: true,
         eventLimit: true, // strang bug, without this, bottom border disappears in firefox
-        googleCalendarApiKey: calGoogleCalendarApiKey,
         eventSources: calEventSources,
         googleCalendarError: function(error) {
             console.error('Google Calendar Error:', error);
@@ -609,7 +602,6 @@ $(function() {
         firstDay: 1,
         theme: true,
         eventLimit: true, // strang bug, without this, bottom border disappears in firefox
-        googleCalendarApiKey: calGoogleCalendarApiKey,
         eventSources: calEventSources,
         googleCalendarError: function(error) {
             console.error('Google Calendar Error:', error);
