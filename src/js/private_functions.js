@@ -69,15 +69,21 @@ export function shuffle(array) {
     return array;
 }
 
-Array.prototype.multiIndexOf = function(el) {
+/**
+ * Find all indices of an element in an array.
+ * @param {Array} array The array to search in.
+ * @param {*} el The element to find.
+ * @return {Array<number>} An array of indices where the element was found.
+ */
+export function multiIndexOf(array, el) {
     var idxs = [];
-    for (var i = this.length - 1; i >= 0; i--) {
-        if (this[i] === el) {
-            idxs.unshift(i);
+    for (var i = 0; i < array.length; i++) {
+        if (array[i] === el) {
+            idxs.push(i);
         }
     }
     return idxs;
-};
+}
 
 /**
  * Check current thread Is or Not in a worker environment.

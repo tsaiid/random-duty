@@ -1,4 +1,4 @@
-import './private_functions.js';
+import { multiIndexOf } from './private_functions.js';
 
 /**
  * Check if group_duties are within the QOD limit or not.
@@ -9,7 +9,7 @@ import './private_functions.js';
 export function less_than_qod_times(group_duties, qod_limit) {
     for (var person in group_duties) {
         if ({}.hasOwnProperty.call(group_duties, person)) {
-            var qod_times = group_duties[person].intervals.multiIndexOf(2).length;
+            var qod_times = multiIndexOf(group_duties[person].intervals, 2).length;
             if (qod_times > parseInt(qod_limit)) {
                 // console.log("qod_times: " + qod_times + ", intervals: " + group_duties[person].intervals.toString());
                 return false;
@@ -28,7 +28,7 @@ export function less_than_qod_times(group_duties, qod_limit) {
 export function has_continuous_duties(group_duties) {
     for (var person in group_duties) {
         if ({}.hasOwnProperty.call(group_duties, person)) {
-            var qd_times = group_duties[person].intervals.multiIndexOf(1).length;
+            var qd_times = multiIndexOf(group_duties[person].intervals, 1).length;
             if (qd_times > 0) {
                 // console.log("qd_times: " + qd_times + ", intervals: " + group_duties[person].intervals.toString());
                 return true;

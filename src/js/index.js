@@ -35,6 +35,7 @@ import '../css/index.css';
 
 import {
     randomIntFromInterval,
+    multiIndexOf,
     is_worker_env
 } from './private_functions.js';
 import {
@@ -844,8 +845,8 @@ $(function() {
         var patterns = [];
         var o_count = parseInt(ordinary_count / people);
         for (var i = 1; i <= people; i++) {
-            var f_count = friday_duties.multiIndexOf(i).length;
-            var h_count = holiday_duties.multiIndexOf(i).length;
+            var f_count = multiIndexOf(friday_duties, i).length;
+            var h_count = multiIndexOf(holiday_duties, i).length;
             patterns.push([o_count, f_count, h_count]);
         }
 
