@@ -28,6 +28,22 @@ export default defineConfig(({ command }) => ({
       output: {
         manualChunks(id) {
           if (id.includes('node_modules')) {
+            if (id.includes('html2canvas')) {
+              return 'html2canvas';
+            }
+            if (id.includes('excellentexport')) {
+              return 'excellentexport';
+            }
+            if (id.includes('fullcalendar')) {
+              return 'fullcalendar';
+            }
+            if (
+              id.includes('jquery-ui-dist') ||
+              id.includes('jQuery-ui-Slider-Pips') ||
+              id.includes('jquery-contenteditable')
+            ) {
+              return 'jquery-ui';
+            }
             return 'vendor';
           }
         },

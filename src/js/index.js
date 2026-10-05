@@ -16,11 +16,8 @@ import 'blockui-npm'; // Attach to jquery
 import 'fullcalendar';
 import 'fullcalendar/dist/fullcalendar.css';
 import 'fullcalendar/dist/gcal.js'; // Attempt to import gcal
-import 'excellentexport';
-const ExcellentExport = window.ExcellentExport;
 import 'jquery-contenteditable';
 import { marked } from 'marked';
-import html2canvas from 'html2canvas';
 import CryptoJS from 'crypto-js';
 import Cookies from 'js-cookie';
 import 'font-awesome/css/font-awesome.css';
@@ -59,9 +56,7 @@ import {
 window.moment = moment;
 window.BootstrapDialog = BootstrapDialog;
 window.CryptoJS = CryptoJS;
-window.ExcellentExport = ExcellentExport;
 window.marked = marked;
-window.html2canvas = html2canvas;
 
 $(function() {
     //
@@ -1725,7 +1720,9 @@ $(function() {
         return _is_each_day_has_a_duty;
     }
 
-    $('#func_download_screenshot').click(function(event) {
+    $('#func_download_screenshot').click(async function() {
+        var { default: html2canvas } = await import('html2canvas');
+        window.html2canvas = html2canvas;
         html2canvas(document.body, {
             onrendered: function(canvas) {
                 var range = get_current_date_range();
@@ -1738,7 +1735,7 @@ $(function() {
         });
     });
 
-    $('#func_download_excel').click(function(event) {
+    $('#func_download_excel').click(function() {
         // set duration as file name.
         var start_date = $('#cal1').fullCalendar('getDate').startOf('month');
         var start_month = start_date.format('YYYY-MM');
@@ -1755,9 +1752,12 @@ $(function() {
         /**
          * Do export excel file of the duties
          */
-        function export_excel() {
+        async function export_excel() {
             // write table for downloading
             generate_duties_datatable(duties);
+            var { default: ExcellentExportModule } = await import('excellentexport');
+            var ExcellentExport = window.ExcellentExport || ExcellentExportModule;
+            window.ExcellentExport = ExcellentExport;
             var __html_a__ = document.createElement('a');
             __html_a__.download = excel_path;
             ExcellentExport.convert(
