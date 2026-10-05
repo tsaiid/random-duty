@@ -11,14 +11,14 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tsaiid/vghks-random-duty.git"
+    "url": "git+https://github.com/tsaiid/random-duty.git"
   },
   "author": "I-Ta Tsai",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/tsaiid/vghks-random-duty/issues"
+    "url": "https://github.com/tsaiid/random-duty/issues"
   },
-  "homepage": "https://github.com/tsaiid/vghks-random-duty#readme",
+  "homepage": "https://github.com/tsaiid/random-duty#readme",
   "devDependencies": {
     "@eslint/js": "^9.39.5",
     "@rollup/plugin-inject": "^5.0.5",

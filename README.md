@@ -1,8 +1,8 @@
 # Random Duty Generator
 
-A single page application to assist resident duty arrangement. Its rules are based on the department of radiology, KSVGH, Taiwan.
+A single page application to assist resident duty arrangement.
 
-輔助住院醫師排班的網頁版小工具。[Demo Site](https://radtools.tsai.it/vghks-random-duty/)
+輔助住院醫師排班的網頁版小工具。[Demo Site](https://radtools.tsai.it/random-duty/)
 
 ## Feature
 
