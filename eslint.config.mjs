@@ -34,6 +34,6 @@ export default [
         },
     },
     {
-        ignores: ['dist/**', 'node_modules/**', 'Rakefile'],
+        ignores: ['dist/**', 'node_modules/**'],
     },
 ];
