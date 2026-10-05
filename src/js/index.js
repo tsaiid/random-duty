@@ -481,11 +481,15 @@ $(function() {
                 $(this).dialog('close');
             },
             '刪除': function() {
-                $('#cal1').fullCalendar('removeEvents', $('#eventId').val());
-                $('#cal2').fullCalendar('removeEvents', $('#eventId').val());
+                var eventId = $('#eventId').val();
+                $('#cal1').fullCalendar('removeEvents', eventId);
+                $('#cal2').fullCalendar('removeEvents', eventId);
                 if (duty_type == 'eventPropHoliday') {
+                    $('#cal1').fullCalendar('removeEvents', eventId + '_bg');
+                    $('#cal2').fullCalendar('removeEvents', eventId + '_bg');
+                    deleted_holidays.push(eventId);
+                    deleted_holidays.push(eventId + '_bg');
                     calculate_suggested_patterns();
-                    deleted_holidays.push($('#eventId').val());
                 }
                 update_current_duty_status();
                 $(this).dialog('close');
