@@ -1,3 +1,17 @@
+### [1.0.3](/random-duty/ver/1.0.3/) – 2026-10-06
+
+1.  Proxy Taiwan holiday events via Cloudflare Worker API gateway.
+2.  Restore and smooth loading overlay transitions.
+3.  Fix duty point calculation and condition threshold in random pattern generation.
+4.  Fix background overlay residue after deleting holiday events.
+5.  Update summary statistics immediately upon dragging or manually editing events.
+6.  Fix ReferenceError in test data deployment.
+7.  Refactor `multiIndexOf` as a pure utility function to prevent prototype pollution.
+8.  Clean up legacy files (`random_pattern_worker.js`, `test.html`, `Rakefile`), IE conditional comments, and obsolete Universal Analytics.
+9.  Optimize vendor bundle size with dynamic imports and chunk splitting.
+10. Upgrade `html2canvas` to v1.4.1 with modern Promise API.
+11. Upgrade project dependencies and modernize deployment script (`deploy.mjs`).
+
 ### [1.0.2](/random-duty/ver/1.0.2/) – 2025-12-01
 
 1.  Migrate project to Vite for modern development environment.
