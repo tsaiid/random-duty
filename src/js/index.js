@@ -1680,6 +1680,7 @@ $(function() {
         }
 
         $.each(test_data, function(i, data) {
+            var eventTitle = data[0].toString();
             var event = {
                 id: CryptoJS.MD5(data[1] + eventTitle).toString(),
                 title: eventTitle,
