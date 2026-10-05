@@ -831,29 +831,10 @@ $(function() {
         }
 
         var patterns = [];
+        var o_count = parseInt(ordinary_count / people);
         for (var i = 1; i <= people; i++) {
-            var o_count;
             var f_count = friday_duties.multiIndexOf(i).length;
             var h_count = holiday_duties.multiIndexOf(i).length;
-
-            if (ENABLE_PATTERN_CONDITIONING) {
-                var total_points = 2 * holiday_count + 1 * friday_count + 1 * ordinary_count;
-                var points = 2 * h_count + 1 * f_count + 1 * o_count;
-                var threshold = {};
-                if (total_points / people < 6) { // in extreme condition (too many people), use loose threshold
-                    threshold.lower = parseInt(total_points / people) - 1;
-                    threshold.upper = parseInt(total_points / people) + 2;
-                } else {
-                    threshold.lower = total_points / people - 1;
-                    threshold.upper = total_points / people + 1;
-                }
-                if (points < threshold.lower || points > threshold.upper) {
-                    return false;
-                }
-
-                o_count = parseInt(ordinary_count / people);
-            }
-
             patterns.push([o_count, f_count, h_count]);
         }
 
@@ -864,6 +845,24 @@ $(function() {
             });
             for (var i = 0; i < residual_ordinary_count; i++) {
                 patterns[i][0]++;
+            }
+        }
+
+        if (ENABLE_PATTERN_CONDITIONING) {
+            var total_points = 2 * holiday_count + 1 * friday_count + 1 * ordinary_count;
+            var threshold = {};
+            if (total_points / people < 6) { // in extreme condition (too many people), use loose threshold
+                threshold.lower = parseInt(total_points / people) - 1;
+                threshold.upper = parseInt(total_points / people) + 2;
+            } else {
+                threshold.lower = total_points / people - 1;
+                threshold.upper = total_points / people + 1;
+            }
+            for (var j = 0; j < people; j++) {
+                var points = 2 * patterns[j][2] + 1 * patterns[j][1] + 1 * patterns[j][0];
+                if (points < threshold.lower || points > threshold.upper) {
+                    return false;
+                }
             }
         }
 
