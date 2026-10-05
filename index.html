@@ -6,6 +6,23 @@
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Random Duty Generator</title>
+    <style>
+        /* 初次載入與 loading 期間背景變暗遮罩 */
+        body:not(.pace-done)::before {
+            content: "";
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background-color: rgba(0, 0, 0, 0.5);
+            z-index: 1999;
+            pointer-events: none;
+        }
+        body:not(.pace-done) > :not(.pace) {
+            opacity: 0;
+        }
+    </style>
     
     <!-- HTML5 shim and Respond.js for IE8 support of HTML5 elements and media queries -->
     <!-- WARNING: Respond.js doesn't work if you view the page via file:// -->
