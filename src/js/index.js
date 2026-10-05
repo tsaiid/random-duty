@@ -1723,16 +1723,17 @@ $(function() {
     $('#func_download_screenshot').click(async function() {
         var { default: html2canvas } = await import('html2canvas');
         window.html2canvas = html2canvas;
-        html2canvas(document.body, {
-            onrendered: function(canvas) {
-                var range = get_current_date_range();
-                var filename = 'random_duty_' + range.month_str + '.png';
-                $('#screenshot_download_link').attr('href', canvas.toDataURL('image/png'));
-                $('#screenshot_download_link').attr('download', filename);
-                var lnk = document.getElementById('screenshot_download_link');
-                lnk.click();
-            },
-        });
+        try {
+            var canvas = await html2canvas(document.body, { useCORS: true });
+            var range = get_current_date_range();
+            var filename = 'random_duty_' + range.month_str + '.png';
+            $('#screenshot_download_link').attr('href', canvas.toDataURL('image/png'));
+            $('#screenshot_download_link').attr('download', filename);
+            var lnk = document.getElementById('screenshot_download_link');
+            lnk.click();
+        } catch (e) {
+            console.error('Screenshot generation failed:', e);
+        }
     });
 
     $('#func_download_excel').click(function() {
