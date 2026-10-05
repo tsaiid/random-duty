@@ -1,3 +1,8 @@
+### [1.1.0](/random-duty/ver/1.1.0/) – 2026-10-06
+
+1.  Filter out non-holiday festival events in Taiwan holiday API response.
+2.  Introduce Vitest and set up unit tests for core scheduling algorithms.
+
 ### [1.0.3](/random-duty/ver/1.0.3/) – 2026-10-06
 
 1.  Proxy Taiwan holiday events via Cloudflare Worker API gateway.
