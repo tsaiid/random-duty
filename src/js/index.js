@@ -391,6 +391,11 @@ $(function() {
                     var events = [];
                     if (doc.items) {
                         $.each(doc.items, function(i, item) {
+                            // 排除非放假之節慶日（如重陽節、元宵節等「假日節慶」）
+                            if (item.description && item.description.indexOf('假日節慶') > -1) {
+                                return;
+                            }
+
                             // Create Background Event (Pink)
                             events.push({
                                 id: item.id + '_bg', // Unique ID
