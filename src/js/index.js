@@ -289,6 +289,8 @@ $(function() {
                     // update suggested patterns
                     calculate_suggested_patterns();
                 }
+                update_current_duty_status();
+                update_summary_duties(calculate_group_duties(get_all_duties()));
             } else {
                 myGrowlUI('Warning', duty_conflict_status);
             }
@@ -492,6 +494,7 @@ $(function() {
                     calculate_suggested_patterns();
                 }
                 update_current_duty_status();
+                update_summary_duties(calculate_group_duties(get_all_duties()));
                 $(this).dialog('close');
             },
             '取消': function() {
@@ -505,6 +508,7 @@ $(function() {
         if ($.inArray('gcal-holiday', event.className) > -1) {
             myGrowlUI('Error', '不可移動假日，請使用刪除功能');
             revertFunc();
+            return;
         }
 
         // both calendars should sync
@@ -521,6 +525,9 @@ $(function() {
         };
 
         other_cal.fullCalendar('renderEvent', other_event, true);
+
+        update_current_duty_status();
+        update_summary_duties(calculate_group_duties(get_all_duties()));
     };
     var myEventRender = function(event, element, view) {
         // show events only in visible areas.
