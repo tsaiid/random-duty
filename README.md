@@ -27,15 +27,27 @@ This project uses **pnpm** for package management and **Vite** for development a
 
 ### Prerequisites
 
-*   Node.js (v14+ recommended)
-*   pnpm (`npm install -g pnpm`)
+*   [mise](https://mise.jdx.dev/) (推薦，專案已於 `.mise.toml` 鎖定環境版本)
+*   或手動安裝：
+    *   Node.js (v20+ / v22 LTS 推薦)
+    *   pnpm (v9+ 推薦)
 
 ### Installation
 
-Install dependencies:
+```bash
+# 若使用 mise，自動安裝鎖定的 Node 與 pnpm 版本
+mise install
+
+# 安裝專案相依套件
+pnpm install
+```
+
+### Running Tests
+
+執行單元測試 (Vitest)：
 
 ```bash
-pnpm install
+pnpm test
 ```
 
 ### Local Development
