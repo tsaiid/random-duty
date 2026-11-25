@@ -128,3 +128,47 @@ export async function exportScheduleToExcel({
     );
     return `${filename}.xlsx`;
 }
+
+/**
+ * Download full schedule state and preferences as a portable JSON backup file.
+ * @param {Object} payload Complete backup payload object.
+ * @param {string} monthStr Month string for default filename.
+ * @return {string} Downloaded filename.
+ */
+export function exportScheduleBackupJson(payload, monthStr) {
+    const filename = `random_duty_backup_${monthStr}.json`;
+    const jsonStr = JSON.stringify({
+        schemaVersion: 1,
+        exportedAt: new Date().toISOString(),
+        ...payload,
+    }, null, 2);
+    const blob = new Blob([jsonStr], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return filename;
+}
+
+/**
+ * Parse and validate an imported JSON backup file.
+ * @param {File} file Uploaded JSON File object.
+ * @return {Promise<{ preferences?: Object, draft: Object }>}
+ */
+export async function parseScheduleBackupFile(file) {
+    const text = await file.text();
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== 'object') {
+        throw new Error('無效的備份檔格式');
+    }
+    const draft = parsed.draft && typeof parsed.draft === 'object' ? parsed.draft : parsed;
+    if (!Array.isArray(draft.presetDuties) && !Array.isArray(draft.generatedDuties) && !draft.currentMonth) {
+        throw new Error('備份檔缺少排班資料欄位');
+    }
+    return {
+        preferences: parsed.preferences && typeof parsed.preferences === 'object' ? parsed.preferences : null,
+        draft,
+    };
+}

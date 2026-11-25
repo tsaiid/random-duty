@@ -22,11 +22,14 @@ import {
     calculate_group_duties_status,
     get_drop_conflict_status,
     get_duty_color,
+    get_duty_text_color,
+    format_person_label,
     generate_balanced_pattern,
     calculate_pattern_points,
     validate_presets_for_schedule,
     calculate_max_continuous_workdays,
     validate_duties_for_export,
+    detect_schedule_violations,
 } from './lib_duties.js';
 import {
     less_than_qod_times,
@@ -37,7 +40,12 @@ import {
     has_boundary_conflict,
 } from './lib_filters.js';
 import { createScheduleStore } from './state_store.js';
-import { downloadScheduleScreenshot, exportScheduleToExcel } from './exporters.js';
+import {
+    downloadScheduleScreenshot,
+    exportScheduleToExcel,
+    exportScheduleBackupJson,
+    parseScheduleBackupFile,
+} from './exporters.js';
 
 const API_GATEWAY_BASE = import.meta.env?.VITE_API_GATEWAY_URL || 'https://api.tsai.it';
 
@@ -48,12 +56,13 @@ const { state } = store;
 let cal1 = null;
 let cal2 = null;
 let activeWorker = null;
-const inflightHolidayYears = new Map(); // year -> Promise
+const inflightHolidayYears = new Map();
 
 // Bootstrap Modal instances
 let calEventModal = null;
 let editPatternModal = null;
 let dialogModal = null;
+let staffNamesModal = null;
 
 /**
  * Escape text safely before inserting into HTML templates.
@@ -67,6 +76,16 @@ function escapeHtml(str) {
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;');
+}
+
+/**
+ * Format person label using current state.staffNames.
+ * @param {number|string} personNo
+ * @param {boolean} [full=false]
+ * @return {string}
+ */
+function personLabel(personNo, full = false) {
+    return format_person_label(personNo, state.staffNames, { full });
 }
 
 /**
@@ -126,7 +145,11 @@ function showWarningModal(message, title = '注意事項') {
     if (bodyEl) {
         bodyEl.innerHTML = `<div class="d-flex align-items-center text-secondary"><i class="bi bi-exclamation-circle text-warning fs-3 me-3"></i><div style="white-space: pre-line;">${escapeHtml(message)}</div></div>`;
     }
-    if (cancelBtn) cancelBtn.classList.add('d-none');
+    if (cancelBtn) {
+        cancelBtn.classList.add('d-none');
+        cancelBtn.textContent = '取消';
+        cancelBtn.onclick = null;
+    }
     if (confirmBtn) {
         confirmBtn.className = 'btn btn-primary btn-sm px-4';
         confirmBtn.textContent = '確定';
@@ -140,7 +163,15 @@ function showWarningModal(message, title = '注意事項') {
  * Show a confirmation modal dialog.
  * @param {Object} options Configuration options
  */
-function showConfirmModal({ title = '確認操作', message, confirmText = '確定', confirmClass = 'btn-danger', onConfirm }) {
+function showConfirmModal({
+    title = '確認操作',
+    message,
+    confirmText = '確定',
+    cancelText = '取消',
+    confirmClass = 'btn-danger',
+    onConfirm,
+    onCancel,
+}) {
     const titleEl = document.getElementById('dialogModalTitle');
     const bodyEl = document.getElementById('dialogModalBody');
     const cancelBtn = document.getElementById('dialogModalCancel');
@@ -150,7 +181,13 @@ function showConfirmModal({ title = '確認操作', message, confirmText = '確�
     if (bodyEl) {
         bodyEl.innerHTML = `<div class="text-secondary leading-relaxed" style="white-space: pre-line;">${escapeHtml(message)}</div>`;
     }
-    if (cancelBtn) cancelBtn.classList.remove('d-none');
+    if (cancelBtn) {
+        cancelBtn.classList.remove('d-none');
+        cancelBtn.textContent = cancelText;
+        cancelBtn.onclick = () => {
+            if (typeof onCancel === 'function') onCancel();
+        };
+    }
     if (confirmBtn) {
         confirmBtn.className = `btn ${confirmClass} btn-sm px-4`;
         confirmBtn.textContent = confirmText;
@@ -164,6 +201,37 @@ function showConfirmModal({ title = '確認操作', message, confirmText = '確�
 }
 
 /**
+ * Update Undo / Redo button states and active person highlight badge.
+ */
+function updateToolbarStateButtons() {
+    const undoBtn = document.getElementById('btn_undo');
+    const redoBtn = document.getElementById('btn_redo');
+    if (undoBtn) undoBtn.disabled = state.undoStack.length === 0;
+    if (redoBtn) redoBtn.disabled = state.redoStack.length === 0;
+
+    const filterBtn = document.getElementById('active_person_filter_btn');
+    const filterLabel = document.getElementById('active_person_filter_label');
+    if (filterBtn && filterLabel) {
+        if (state.highlightedPerson !== null) {
+            filterBtn.classList.remove('d-none');
+            filterLabel.textContent = personLabel(state.highlightedPerson, true);
+        } else {
+            filterBtn.classList.add('d-none');
+        }
+    }
+}
+
+/**
+ * Toggle highlight filter for a specific person number.
+ * @param {number|null} personNo
+ */
+function toggleHighlightPerson(personNo) {
+    const parsed = personNo !== null ? parseInt(personNo, 10) : null;
+    state.highlightedPerson = (state.highlightedPerson === parsed) ? null : parsed;
+    syncAllViews();
+}
+
+/**
  * Persist draft to localStorage if autoSaveDraft is enabled.
  */
 function triggerAutoSaveDraft() {
@@ -173,7 +241,7 @@ function triggerAutoSaveDraft() {
 
 /**
  * Refresh schedule-driven event sources on active FullCalendar instances.
- * @param {boolean} [includeOfficialHolidays=false] Also refresh official holiday source (e.g. after delete/reset).
+ * @param {boolean} [includeOfficialHolidays=false]
  */
 function refreshCalendars(includeOfficialHolidays = false) {
     [cal1, cal2].filter(Boolean).forEach(cal => {
@@ -185,14 +253,37 @@ function refreshCalendars(includeOfficialHolidays = false) {
 }
 
 /**
- * Refresh all derived UI views (calendar events, suggested patterns, summary dashboard).
+ * Refresh all derived UI views (calendar events, suggested patterns, summary dashboard, undo/filter toolbar).
  * @param {Object} [options]
  * @param {boolean} [options.includeOfficialHolidays=false]
  */
 function syncAllViews({ includeOfficialHolidays = false } = {}) {
+    updateToolbarStateButtons();
     refreshCalendars(includeOfficialHolidays);
     updateSuggestedPatterns();
     updateSummaryDuties(calculate_group_duties(store.getAllDuties()));
+}
+
+/**
+ * Perform Undo action.
+ */
+function handleUndo() {
+    if (store.undo()) {
+        syncAllViews({ includeOfficialHolidays: true });
+        triggerAutoSaveDraft();
+        showToast('info', '已復原', '已還原至上一步排班狀態。');
+    }
+}
+
+/**
+ * Perform Redo action.
+ */
+function handleRedo() {
+    if (store.redo()) {
+        syncAllViews({ includeOfficialHolidays: true });
+        triggerAutoSaveDraft();
+        showToast('info', '已重做', '已重做排班變更。');
+    }
 }
 
 /**
@@ -247,7 +338,7 @@ function ensureOfficialHolidaysForYear(year) {
 }
 
 /**
- * FullCalendar EventSource for official Taiwan holidays (backed by year-level memory cache).
+ * FullCalendar EventSource for official Taiwan holidays.
  */
 async function fetchOfficialHolidaysSource(fetchInfo, successCallback, failureCallback) {
     const startYear = dayjs(fetchInfo.start).year();
@@ -293,11 +384,11 @@ async function fetchOfficialHolidaysSource(fetchInfo, successCallback, failureCa
 
         successCallback(events);
 
-        // Only recalculate patterns & summary if newly loaded official holidays changed the active range
         const nextHolidaySig = store.getHolidaysInRange().join(',');
         if (nextHolidaySig !== prevHolidaySig) {
             updateSuggestedPatterns();
             updateSummaryDuties(calculate_group_duties(store.getAllDuties()));
+            refreshCalendars(false);
         }
     } catch (err) {
         console.error('Failed to load Taiwan holidays:', err);
@@ -308,11 +399,30 @@ async function fetchOfficialHolidaysSource(fetchInfo, successCallback, failureCa
 
 /**
  * FullCalendar EventSource derived synchronously from normalized schedule state.
+ * Includes WCAG contrast text colors, preset/non-duty badges, highlight filters, and violation indicators.
  */
 function buildScheduleStateEvents(fetchInfo, successCallback) {
     const minStr = dayjs(fetchInfo.start).format('YYYY-MM-DD');
     const maxStr = dayjs(fetchInfo.end).format('YYYY-MM-DD');
     const events = [];
+
+    // Compute live constraint violations for current active range
+    const range = store.getDateRange();
+    const totalDays = range.end_date.diff(range.start_date, 'day');
+    const presetHolidays = store.getHolidaysInRange();
+    const boundaryDuties = store.getBoundaryDuties();
+    const weekCtx = state.useWeekHoursLimit
+        ? prepare_week_hours_context(range.startStr, totalDays, presetHolidays, true, boundaryDuties)
+        : null;
+    const violationsMap = detect_schedule_violations(store.getAllDuties(), {
+        nonDuties: store.getPresetNonDuties(),
+        boundaryDuties,
+        useQodLimit: state.useQodLimit,
+        qodLimit: state.qodLimit,
+        useWeekHoursLimit: state.useWeekHoursLimit,
+        maxWeekHours: state.weekHoursLimit,
+        weekContext: weekCtx,
+    });
 
     state.customHolidays.forEach(h => {
         if (h.date < minStr || h.date > maxStr) return;
@@ -336,32 +446,59 @@ function buildScheduleStateEvents(fetchInfo, successCallback) {
         });
     });
 
+    const hlPerson = state.highlightedPerson;
+
     state.dutyItems.forEach(item => {
         if (item.date < minStr || item.date > maxStr) return;
         const color = get_duty_color(item.person);
+        const textColor = get_duty_text_color(color);
+        const baseLabel = personLabel(item.person, false);
+        const vReasons = violationsMap.get(`${item.date}_${item.person}`);
+        const prefix = vReasons ? '⚠️ ' : (item.isPreset ? '📌 ' : '');
+
+        const classes = [item.isPreset ? 'preset-duty-event' : 'duty-event'];
+        if (vReasons) classes.push('duty-violation-warning');
+        if (hlPerson !== null) {
+            classes.push(item.person === hlPerson ? 'fc-event-highlighted' : 'fc-event-dimmed');
+        }
+
         events.push({
             id: item.id,
-            title: String(item.person),
+            title: `${prefix}${baseLabel}`,
             start: item.date,
             allDay: true,
-            classNames: [item.isPreset ? 'preset-duty-event' : 'duty-event'],
+            classNames: classes,
             backgroundColor: color,
             borderColor: color,
+            textColor,
             editable: true,
-            extendedProps: { person: item.person, isPreset: item.isPreset, kind: 'duty' },
+            extendedProps: {
+                person: item.person,
+                isPreset: item.isPreset,
+                kind: 'duty',
+                violationHint: vReasons ? `規則提醒：${vReasons.join('、')}` : (item.isPreset ? '預先鎖定值班' : ''),
+            },
         });
     });
 
     state.nonDutyItems.forEach(item => {
         if (item.date < minStr || item.date > maxStr) return;
+        const classes = ['preset-non-duty-event'];
+        if (hlPerson !== null) {
+            classes.push(item.person === hlPerson ? 'fc-event-highlighted' : 'fc-event-dimmed');
+        }
         events.push({
             id: item.id,
-            title: String(item.person),
+            title: `✕ ${personLabel(item.person, false)}`,
             start: item.date,
             allDay: true,
-            classNames: ['preset-non-duty-event'],
+            classNames: classes,
             editable: true,
-            extendedProps: { person: item.person, kind: 'nonduty' },
+            extendedProps: {
+                person: item.person,
+                kind: 'nonduty',
+                violationHint: `${personLabel(item.person, true)} 本日設為不值`,
+            },
         });
     });
 
@@ -406,11 +543,12 @@ function updateSummaryDuties(groups) {
     const weekContext = prepare_week_hours_context(dateRange.startStr, totalDays, presetHolidays, true, boundaryDuties);
 
     let html = `
+        <div class="text-muted x-small mb-2"><i class="bi bi-hand-index-thumb me-1"></i>點擊任一人員列可於日曆高亮檢視該員班次分佈</div>
         <div class="table-responsive">
             <table class="table table-hover table-striped align-middle table-summary mb-0">
                 <thead>
                     <tr>
-                        <th class="text-center text-nowrap" style="width: 60px;">人員</th>
+                        <th class="text-start text-nowrap" style="min-width: 90px;">人員</th>
                         <th style="min-width: 150px; max-width: 260px;">值班日清單</th>
                         <th class="text-center text-nowrap" style="width: 120px;">班距</th>
                         <th class="text-center text-nowrap" style="min-width: 210px;">週工時</th>
@@ -428,6 +566,7 @@ function updateSummaryDuties(groups) {
 
     const sortedPeopleKeys = Object.keys(groups).sort((a, b) => Number(a) - Number(b));
     for (const p of sortedPeopleKeys) {
+        const pNum = parseInt(p, 10);
         const person = groups[p];
         const sortedDates = person.dates.slice().sort();
         const { week_hours: weekHours, week_hours_pm_off: weekHoursPmOff } = calculate_person_week_hours(sortedDates, weekContext, p);
@@ -469,11 +608,12 @@ function updateSummaryDuties(groups) {
 
         const qodExceeded = state.useQodLimit ? qodCount > state.qodLimit : qodCount > 0;
         const stdDev = person.std_dev ? person.std_dev.toFixed(2) : '0.00';
+        const isHighlighted = state.highlightedPerson === pNum;
 
         html += `
-            <tr>
-                <td class="text-center fw-bold text-nowrap">
-                    <span class="color-dot" style="background-color: ${get_duty_color(p)};"></span>${escapeHtml(p)}
+            <tr class="person-row-interactive ${isHighlighted ? 'person-row-active' : ''}" data-highlight-person="${pNum}">
+                <td class="text-start fw-bold text-nowrap">
+                    <span class="color-dot" style="background-color: ${get_duty_color(p)};"></span>${escapeHtml(personLabel(p, false))}
                 </td>
                 <td class="duty-dates-cell">${dateBadges}</td>
                 <td class="text-center text-nowrap">${intervalBadges || '<span class="text-muted">-</span>'}</td>
@@ -493,12 +633,13 @@ function updateSummaryDuties(groups) {
     `;
 
     summaryContainer.innerHTML = html;
+    summaryContainer.querySelectorAll('tr[data-highlight-person]').forEach(row => {
+        row.addEventListener('click', () => toggleHighlightPerson(row.dataset.highlightPerson));
+    });
 }
 
 /**
  * Count ordinary, Friday, and holiday days in the active date range.
- * @param {string[]} presetHolidays
- * @return {{ ordinaryCount: number, fridayCount: number, holidayCount: number }}
  */
 function countRangeCategoryDays(presetHolidays) {
     const range = store.getDateRange();
@@ -520,15 +661,23 @@ function countRangeCategoryDays(presetHolidays) {
 }
 
 /**
- * Generate and render suggested duty patterns without main-thread retry loops or startup flicker.
- * @param {Object} [options]
- * @param {boolean} [options.forceRegenerate=false] Force generating a fresh random pattern.
+ * Generate and render suggested duty patterns.
  */
 function updateSuggestedPatterns({ forceRegenerate = false } = {}) {
     const range = store.getDateRange();
     const presetHolidays = store.getHolidaysInRange();
     const { ordinaryCount, fridayCount, holidayCount } = countRangeCategoryDays(presetHolidays);
-    const dayCountsSig = `${ordinaryCount}_${fridayCount}_${holidayCount}`;
+    const presetDuties = store.getPresetDuties();
+    const presetStatus = calculate_group_duties_status(
+        calculate_group_duties(presetDuties),
+        presetHolidays
+    );
+    const minPerPerson = Array.from({ length: state.people }, (_, idx) => {
+        const ps = presetStatus[idx + 1];
+        return ps ? [ps.ordinary_count || 0, ps.friday_count || 0, ps.holiday_count || 0] : [0, 0, 0];
+    });
+    const presetSig = JSON.stringify(minPerPerson);
+    const dayCountsSig = `${ordinaryCount}_${fridayCount}_${holidayCount}_${presetSig}`;
 
     const patternKey = `${range.month_str}_${state.monthSpan}_${state.people}`;
     let patterns = null;
@@ -539,8 +688,10 @@ function updateSuggestedPatterns({ forceRegenerate = false } = {}) {
             (acc, r) => [acc[0] + r[0], acc[1] + r[1], acc[2] + r[2]],
             [0, 0, 0]
         );
-        // Use saved pattern if its totals still match the month's category counts
-        if (sumSaved[0] === ordinaryCount && sumSaved[1] === fridayCount && sumSaved[2] === holidayCount) {
+        const respectsPresets = saved.every((r, idx) =>
+            r[0] >= minPerPerson[idx][0] && r[1] >= minPerPerson[idx][1] && r[2] >= minPerPerson[idx][2]
+        );
+        if (respectsPresets && sumSaved[0] === ordinaryCount && sumSaved[1] === fridayCount && sumSaved[2] === holidayCount) {
             patterns = saved;
         }
     }
@@ -550,7 +701,7 @@ function updateSuggestedPatterns({ forceRegenerate = false } = {}) {
     }
 
     if (!patterns) {
-        patterns = generate_balanced_pattern(state.people, ordinaryCount, fridayCount, holidayCount);
+        patterns = generate_balanced_pattern(state.people, ordinaryCount, fridayCount, holidayCount, minPerPerson);
         state.sessionPatterns[patternKey] = { dayCountsSig, patterns };
     }
 
@@ -594,10 +745,12 @@ function updateSuggestedPatterns({ forceRegenerate = false } = {}) {
             ? `<span class="badge bg-success-subtle text-success-emphasis font-monospace">${personStatus.ordinary_count}/${personStatus.friday_count}/${personStatus.holiday_count}</span>`
             : `<span class="badge badge-mismatch font-monospace">${personStatus.ordinary_count}/${personStatus.friday_count}/${personStatus.holiday_count}</span>`;
 
+        const isHighlighted = state.highlightedPerson === personNo;
+
         tableHtml += `
-            <tr class="border-bottom border-light">
-                <td class="text-start fw-bold">
-                    <span class="color-dot" style="background-color: ${get_duty_color(personNo)};"></span>${personNo}
+            <tr class="border-bottom border-light person-row-interactive ${isHighlighted ? 'person-row-active' : ''}" data-highlight-person="${personNo}" title="點擊以高亮檢視此人員班表">
+                <td class="text-start fw-bold text-nowrap">
+                    <span class="color-dot" style="background-color: ${get_duty_color(personNo)};"></span>${escapeHtml(personLabel(personNo, false))}
                 </td>
                 <td class="font-monospace text-secondary">${pat[0]}</td>
                 <td class="font-monospace text-secondary">${pat[1]}</td>
@@ -615,33 +768,86 @@ function updateSuggestedPatterns({ forceRegenerate = false } = {}) {
     `;
 
     container.innerHTML = tableHtml;
+    container.querySelectorAll('tr[data-highlight-person]').forEach(row => {
+        row.addEventListener('click', () => toggleHighlightPerson(row.dataset.highlightPerson));
+    });
 }
 
 /**
- * Open the Event creation/editing Modal.
+ * Sync visibility of single-person dropdown vs multi-person checkboxes vs holiday input in Event Modal.
+ */
+function updateEventModalFieldVisibility() {
+    const selectedCategory = document.querySelector('input[name="eventProp"]:checked')?.value || 'eventPropDuty';
+    const isEditing = Boolean(document.getElementById('eventId').value);
+    const endExclusive = document.getElementById('eventEndExclusive').value;
+    const startStr = document.getElementById('eventStart').value;
+    const isMultiDay = Boolean(endExclusive && dayjs(endExclusive).diff(dayjs(startStr), 'day') > 1);
+
+    const dutyRadio = document.getElementById('eventPropDuty');
+    if (dutyRadio) {
+        // Multi-day drag cannot assign the same person consecutively (QD forbidden) -> guide to Non-duty or Holiday
+        dutyRadio.disabled = isMultiDay;
+    }
+
+    const personGroup = document.getElementById('person_select_group');
+    const multiCheckGroup = document.getElementById('multi_person_check_group');
+    const holidayGroup = document.getElementById('holiday_input_group');
+
+    if (selectedCategory === 'eventPropHoliday') {
+        personGroup.classList.add('d-none');
+        multiCheckGroup.classList.add('d-none');
+        holidayGroup.classList.remove('d-none');
+    } else if (selectedCategory === 'eventPropNonduty' && !isEditing) {
+        personGroup.classList.add('d-none');
+        multiCheckGroup.classList.remove('d-none');
+        holidayGroup.classList.add('d-none');
+    } else {
+        personGroup.classList.remove('d-none');
+        multiCheckGroup.classList.add('d-none');
+        holidayGroup.classList.add('d-none');
+    }
+}
+
+/**
+ * Open the Event creation/editing Modal (supports single date and multi-day drag selection).
  * @param {Object} options Modal configuration options
  */
-function openEventModal({ dateStr, event = null }) {
+function openEventModal({ dateStr, endExclusiveStr = '', event = null }) {
     const modalTitle = document.getElementById('calEventModalLabel');
     const deleteBtn = document.getElementById('btn_delete_cal_event');
     const form = document.getElementById('calEventDialogForm');
     const personSelect = document.getElementById('eventTitleSelect');
-    const personGroup = document.getElementById('person_select_group');
+    const multiCheckContainer = document.getElementById('multi_person_checkboxes');
     const holidayInput = document.getElementById('eventTitleInput');
-    const holidayGroup = document.getElementById('holiday_input_group');
     const eventOrigTitle = document.getElementById('eventOrigTitle');
     const eventStart = document.getElementById('eventStart');
+    const eventEndExclusive = document.getElementById('eventEndExclusive');
     const eventId = document.getElementById('eventId');
 
     form.reset();
+    const effectiveEnd = endExclusiveStr || dayjs(dateStr).add(1, 'day').format('YYYY-MM-DD');
+    const spanDays = dayjs(effectiveEnd).diff(dayjs(dateStr), 'day');
     eventStart.value = dateStr;
+    eventEndExclusive.value = effectiveEnd;
 
+    // Populate single select & multi-person checkbox grid
     personSelect.innerHTML = '';
+    multiCheckContainer.innerHTML = '';
     for (let i = 1; i <= state.people; i++) {
         const opt = document.createElement('option');
         opt.value = i;
-        opt.textContent = `人員 ${i}`;
+        opt.textContent = personLabel(i, true);
         personSelect.appendChild(opt);
+
+        const wrap = document.createElement('div');
+        const chkId = `multi_nd_p_${i}`;
+        wrap.innerHTML = `
+            <input type="checkbox" class="btn-check multi-person-chk" id="${chkId}" value="${i}" autocomplete="off">
+            <label class="btn btn-outline-secondary btn-sm w-100 text-truncate text-start" for="${chkId}">
+                <span class="color-dot" style="background-color: ${get_duty_color(i)};"></span>${escapeHtml(personLabel(i, false))}
+            </label>
+        `;
+        multiCheckContainer.appendChild(wrap);
     }
 
     if (event) {
@@ -654,49 +860,57 @@ function openEventModal({ dateStr, event = null }) {
             document.getElementById('eventPropDuty').checked = true;
             const pVal = event.extendedProps?.person ?? parseInt(event.title, 10);
             personSelect.value = String(pVal);
-            personGroup.classList.remove('d-none');
-            holidayGroup.classList.add('d-none');
         } else if (event.classNames.includes('preset-non-duty-event')) {
             document.getElementById('eventPropNonduty').checked = true;
             const pVal = event.extendedProps?.person ?? parseInt(event.title, 10);
             personSelect.value = String(pVal);
-            personGroup.classList.remove('d-none');
-            holidayGroup.classList.add('d-none');
         } else if (event.classNames.includes('holiday-event')) {
             document.getElementById('eventPropHoliday').checked = true;
             holidayInput.value = event.title.replace(/^假日\s*/, '');
-            personGroup.classList.add('d-none');
-            holidayGroup.classList.remove('d-none');
         }
     } else {
-        modalTitle.textContent = `新增班表事件 (${dateStr})`;
+        const endInclusiveStr = dayjs(effectiveEnd).subtract(1, 'day').format('YYYY-MM-DD');
+        modalTitle.textContent = spanDays > 1
+            ? `批次新增區間事件 (${dateStr} ~ ${endInclusiveStr}，共 ${spanDays} 天)`
+            : `新增班表事件 (${dateStr})`;
         deleteBtn.classList.add('d-none');
         eventOrigTitle.value = '';
         eventId.value = '';
-        document.getElementById('eventPropDuty').checked = true;
-        personGroup.classList.remove('d-none');
-        holidayGroup.classList.add('d-none');
+
+        if (spanDays > 1) {
+            document.getElementById('eventPropNonduty').checked = true;
+        } else {
+            document.getElementById('eventPropDuty').checked = true;
+        }
     }
 
+    updateEventModalFieldVisibility();
     calEventModal.show();
 }
 
 /**
- * Handle saving event from Event Modal.
+ * Handle saving event(s) from Event Modal.
  */
 function handleSaveCalEvent() {
     const eventType = document.querySelector('input[name="eventProp"]:checked').value;
-    const dateStr = document.getElementById('eventStart').value;
+    const startStr = document.getElementById('eventStart').value;
+    const endExclusiveStr = document.getElementById('eventEndExclusive').value || dayjs(startStr).add(1, 'day').format('YYYY-MM-DD');
     const existingId = document.getElementById('eventId').value;
-    const sameDayOthers = store.getSameDayScheduleEvents(dateStr, existingId);
+
+    const datesList = [];
+    for (let cur = dayjs(startStr); cur.isBefore(dayjs(endExclusiveStr)); cur = cur.add(1, 'day')) {
+        datesList.push(cur.format('YYYY-MM-DD'));
+    }
 
     if (eventType === 'eventPropDuty') {
+        const dateStr = datesList[0];
         const person = parseInt(document.getElementById('eventTitleSelect').value, 10);
+        const sameDayOthers = store.getSameDayScheduleEvents(dateStr, existingId);
         const existingDuty = sameDayOthers.find(
             e => e.className.includes('duty-event') || e.className.includes('preset-duty-event')
         );
         if (existingDuty) {
-            showWarningModal(`該日期 (${dateStr}) 已有人員 ${existingDuty.person} 值班！`);
+            showWarningModal(`該日期 (${dateStr}) 已有 ${personLabel(existingDuty.person, true)} 值班！`);
             return;
         }
         const conflict = get_drop_conflict_status(
@@ -712,24 +926,57 @@ function handleSaveCalEvent() {
         if (existingId) store.removeById(existingId);
         store.addDutyItem({ date: dateStr, person, isPreset: true });
     } else if (eventType === 'eventPropNonduty') {
-        const person = parseInt(document.getElementById('eventTitleSelect').value, 10);
-        const conflict = get_drop_conflict_status(
-            { title: String(person), className: ['preset-non-duty-event'] },
-            sameDayOthers
-        );
-        if (conflict) {
-            showWarningModal(conflict);
-            return;
-        }
+        if (existingId) {
+            const dateStr = datesList[0];
+            const person = parseInt(document.getElementById('eventTitleSelect').value, 10);
+            const sameDayOthers = store.getSameDayScheduleEvents(dateStr, existingId);
+            const conflict = get_drop_conflict_status(
+                { title: String(person), className: ['preset-non-duty-event'] },
+                sameDayOthers
+            );
+            if (conflict) {
+                showWarningModal(conflict);
+                return;
+            }
+            store.pushUndo();
+            store.removeById(existingId);
+            store.addNonDutyItem({ date: dateStr, person });
+        } else {
+            const selectedPeople = Array.from(document.querySelectorAll('.multi-person-chk:checked'))
+                .map(chk => parseInt(chk.value, 10));
+            if (selectedPeople.length === 0) {
+                showWarningModal('請至少勾選一位不值班人員！');
+                return;
+            }
 
-        store.pushUndo();
-        if (existingId) store.removeById(existingId);
-        store.addNonDutyItem({ date: dateStr, person });
+            // Validate against existing duty conflicts across selected dates
+            for (const dStr of datesList) {
+                const sameDayOthers = store.getSameDayScheduleEvents(dStr);
+                for (const p of selectedPeople) {
+                    const hasDuty = sameDayOthers.some(
+                        e => e.person === p && (e.className.includes('duty-event') || e.className.includes('preset-duty-event'))
+                    );
+                    if (hasDuty) {
+                        showWarningModal(`${personLabel(p, true)} 於 ${dStr} 已設為值班，不可同時設為不值！`);
+                        return;
+                    }
+                }
+            }
+
+            store.pushUndo();
+            for (const dStr of datesList) {
+                for (const p of selectedPeople) {
+                    store.addNonDutyItem({ date: dStr, person: p });
+                }
+            }
+        }
     } else if (eventType === 'eventPropHoliday') {
         const rawTitle = document.getElementById('eventTitleInput').value;
         store.pushUndo();
         if (existingId) store.removeById(existingId);
-        store.addCustomHoliday({ date: dateStr, title: rawTitle });
+        for (const dStr of datesList) {
+            store.addCustomHoliday({ date: dStr, title: rawTitle });
+        }
     }
 
     calEventModal.hide();
@@ -753,9 +1000,72 @@ function handleDeleteCalEvent() {
 }
 
 /**
+ * Open Staff Names configuration modal.
+ */
+function openStaffNamesModal() {
+    const container = document.getElementById('staff_names_inputs');
+    const bulkInput = document.getElementById('staff_bulk_paste');
+    if (!container) return;
+    if (bulkInput) bulkInput.value = '';
+
+    let html = '';
+    for (let i = 1; i <= state.people; i++) {
+        const currentName = state.staffNames[String(i)] || '';
+        html += `
+            <div class="col-6">
+                <div class="input-group input-group-sm">
+                    <span class="input-group-text fw-semibold" style="min-width: 58px;">
+                        <span class="color-dot" style="background-color: ${get_duty_color(i)};"></span>#${i}
+                    </span>
+                    <input type="text" class="form-control staff-name-input" data-person="${i}" value="${escapeHtml(currentName)}" maxlength="20" placeholder="人員 ${i} 姓名">
+                </div>
+            </div>
+        `;
+    }
+    container.innerHTML = html;
+    staffNamesModal.show();
+}
+
+/**
+ * Apply bulk-pasted staff names into the modal input fields.
+ */
+function handleApplyBulkStaffNames() {
+    const raw = document.getElementById('staff_bulk_paste')?.value || '';
+    const tokens = raw.split(/[,，、;\n\t\s]+/).map(s => s.trim()).filter(Boolean);
+    if (tokens.length === 0) return;
+
+    const inputs = document.querySelectorAll('#staff_names_inputs .staff-name-input');
+    inputs.forEach((input, idx) => {
+        if (tokens[idx] !== undefined) {
+            input.value = tokens[idx];
+        }
+    });
+}
+
+/**
+ * Save customized staff names.
+ */
+function handleSaveStaffNames() {
+    const inputs = document.querySelectorAll('#staff_names_inputs .staff-name-input');
+    const updated = { ...state.staffNames };
+    inputs.forEach(input => {
+        const p = input.dataset.person;
+        const val = input.value.trim();
+        if (val) {
+            updated[p] = val;
+        } else {
+            delete updated[p];
+        }
+    });
+    state.staffNames = updated;
+    staffNamesModal.hide();
+    syncAllViews();
+    triggerAutoSaveDraft();
+    showToast('success', '名單已更新', '人員顯示名稱已套用至日曆、統計表與匯出檔。');
+}
+
+/**
  * Shared FullCalendar options builder.
- * @param {string} initialDateStr YYYY-MM-01
- * @return {Object} FullCalendar configuration object
  */
 function createCalendarOptions(initialDateStr) {
     return {
@@ -765,14 +1075,30 @@ function createCalendarOptions(initialDateStr) {
         headerToolbar: false,
         editable: true,
         droppable: false,
+        selectable: true,
+        longPressDelay: 350,
+        eventLongPressDelay: 350,
         firstDay: 1,
         height: 'auto',
         eventSources: [
             { id: 'official-holidays', events: fetchOfficialHolidaysSource },
             { id: 'schedule-state', events: buildScheduleStateEvents },
         ],
+        eventDidMount(info) {
+            const hint = info.event.extendedProps?.violationHint;
+            if (hint) {
+                info.el.setAttribute('title', hint);
+            }
+        },
         dateClick(info) {
             openEventModal({ dateStr: info.dateStr });
+        },
+        select(info) {
+            const spanDays = dayjs(info.endStr).diff(dayjs(info.startStr), 'day');
+            if (spanDays > 1) {
+                openEventModal({ dateStr: info.startStr, endExclusiveStr: info.endStr });
+            }
+            info.view.calendar.unselect();
         },
         eventClick(info) {
             const evt = info.event;
@@ -794,9 +1120,12 @@ function createCalendarOptions(initialDateStr) {
         },
         eventDrop(info) {
             const evt = info.event;
+            const oldDateStr = dayjs(info.oldEvent.start).format('YYYY-MM-DD');
             const targetDateStr = dayjs(evt.start).format('YYYY-MM-DD');
             const sameDayOthers = store.getSameDayScheduleEvents(targetDateStr, evt.id);
             const person = evt.extendedProps?.person ?? parseInt(evt.title, 10);
+            const isNonDuty = evt.classNames.includes('preset-non-duty-event');
+            const isPreset = evt.classNames.includes('preset-duty-event');
 
             const pseudoEvent = {
                 title: String(person),
@@ -810,12 +1139,57 @@ function createCalendarOptions(initialDateStr) {
                 return;
             }
 
+            // Check if dropping a duty onto another person's single duty -> offer 1-step Swap!
+            const otherDutiesOnTarget = !isNonDuty
+                ? sameDayOthers.filter(e => e.className.includes('duty-event') || e.className.includes('preset-duty-event'))
+                : [];
+
+            if (!isNonDuty && oldDateStr !== targetDateStr && otherDutiesOnTarget.length === 1 && otherDutiesOnTarget[0].person !== person) {
+                const otherDuty = otherDutiesOnTarget[0];
+                const applyOverlapOnly = () => {
+                    store.pushUndo();
+                    store.removeById(evt.id);
+                    store.addDutyItem({ date: targetDateStr, person, isPreset });
+                    syncAllViews();
+                    triggerAutoSaveDraft();
+                };
+
+                showConfirmModal({
+                    title: '是否直接互換班次？',
+                    message: `${targetDateStr} 目前已由「${personLabel(otherDuty.person, true)}」值班。\n是否直接將兩人的班次對調（把「${personLabel(otherDuty.person, true)}」移至 ${oldDateStr}）？`,
+                    confirmText: '直接互換班次',
+                    cancelText: '僅並排於同日',
+                    confirmClass: 'btn-primary',
+                    onConfirm: () => {
+                        const oldDayOthers = store.getSameDayScheduleEvents(oldDateStr, evt.id);
+                        const reverseConflict = get_drop_conflict_status(
+                            { title: String(otherDuty.person), className: otherDuty.className },
+                            oldDayOthers
+                        );
+                        if (reverseConflict) {
+                            showToast('warning', '無法互換班次', `${oldDateStr}：${reverseConflict}`);
+                            info.revert();
+                            return;
+                        }
+                        store.pushUndo();
+                        store.removeById(evt.id);
+                        store.removeById(otherDuty.id);
+                        store.addDutyItem({ date: targetDateStr, person, isPreset });
+                        store.addDutyItem({ date: oldDateStr, person: otherDuty.person, isPreset: Boolean(otherDuty.isPreset) });
+                        syncAllViews();
+                        triggerAutoSaveDraft();
+                        showToast('success', '換班完成', `已對調 ${oldDateStr} 與 ${targetDateStr} 之值班人員。`);
+                    },
+                    onCancel: applyOverlapOnly,
+                });
+                return;
+            }
+
             store.pushUndo();
             store.removeById(evt.id);
-            if (evt.classNames.includes('preset-non-duty-event')) {
+            if (isNonDuty) {
                 store.addNonDutyItem({ date: targetDateStr, person });
             } else {
-                const isPreset = evt.classNames.includes('preset-duty-event');
                 store.addDutyItem({ date: targetDateStr, person, isPreset });
             }
 
@@ -826,7 +1200,7 @@ function createCalendarOptions(initialDateStr) {
 }
 
 /**
- * Initialize primary calendar (cal2 is lazily created only when 2-month mode is active).
+ * Initialize primary calendar.
  */
 function initCalendars() {
     const cal1El = document.getElementById('cal1');
@@ -849,9 +1223,6 @@ function ensureSecondCalendar() {
 
 /**
  * Switch month span (1 month vs 2 months).
- * @param {number} span 1 or 2
- * @param {Object} [options]
- * @param {boolean} [options.persist=true] Whether to persist preference change
  */
 function setMonthSpan(span, { persist = true } = {}) {
     state.monthSpan = span;
@@ -877,8 +1248,7 @@ function setMonthSpan(span, { persist = true } = {}) {
 
     if (cal1) cal1.updateSize();
     updateCalendarToolbar();
-    updateSuggestedPatterns();
-    updateSummaryDuties(calculate_group_duties(store.getAllDuties()));
+    syncAllViews();
     if (persist) {
         savePreferences({ mode_switch: span === 2 });
     }
@@ -886,7 +1256,6 @@ function setMonthSpan(span, { persist = true } = {}) {
 
 /**
  * Navigate calendar month.
- * @param {number} delta Month offset (-1 or +1)
  */
 function navigateMonth(delta) {
     state.currentMonth = state.currentMonth.add(delta, 'month');
@@ -895,8 +1264,7 @@ function navigateMonth(delta) {
         cal2.gotoDate(state.currentMonth.clone().add(1, 'month').format('YYYY-MM-01'));
     }
     updateCalendarToolbar();
-    updateSuggestedPatterns();
-    updateSummaryDuties(calculate_group_duties(store.getAllDuties()));
+    syncAllViews();
     triggerAutoSaveDraft();
 }
 
@@ -910,8 +1278,7 @@ function resetToDefaultMonth() {
         cal2.gotoDate(state.currentMonth.clone().add(1, 'month').format('YYYY-MM-01'));
     }
     updateCalendarToolbar();
-    updateSuggestedPatterns();
-    updateSummaryDuties(calculate_group_duties(store.getAllDuties()));
+    syncAllViews();
     triggerAutoSaveDraft();
 }
 
@@ -1065,10 +1432,10 @@ function openPatternEditor() {
         <table class="table table-bordered align-middle text-center" id="edit_patterns_table">
             <thead class="table-light">
                 <tr>
-                    <th style="width: 25%;">人員</th>
-                    <th style="width: 20%;">平</th>
-                    <th style="width: 20%;">五</th>
-                    <th style="width: 20%;">假</th>
+                    <th style="width: 28%;">人員</th>
+                    <th style="width: 19%;">平</th>
+                    <th style="width: 19%;">五</th>
+                    <th style="width: 19%;">假</th>
                     <th style="width: 15%;">積點</th>
                 </tr>
             </thead>
@@ -1081,8 +1448,8 @@ function openPatternEditor() {
         const pg = presetGroups[personNo] || { ordinary_count: 0, friday_count: 0, holiday_count: 0 };
         html += `
             <tr data-person="${personNo}">
-                <td class="fw-bold">
-                    <span class="color-dot" style="background-color: ${get_duty_color(personNo)};"></span>人員 ${personNo}
+                <td class="fw-bold text-start ps-3">
+                    <span class="color-dot" style="background-color: ${get_duty_color(personNo)};"></span>${escapeHtml(personLabel(personNo, true))}
                 </td>
                 <td><input type="number" min="${pg.ordinary_count}" class="form-control form-control-sm text-center duty_input input_o" value="${pat[0]}" title="已預排平日班：${pg.ordinary_count}"></td>
                 <td><input type="number" min="${pg.friday_count}" class="form-control form-control-sm text-center duty_input input_f" value="${pat[1]}" title="已預排週五班：${pg.friday_count}"></td>
@@ -1202,15 +1569,15 @@ function handleSavePattern() {
 }
 
 /**
- * Download high-resolution screenshot.
+ * Download high-resolution screenshot of the clean schedule workspace (without sidebar controls).
  */
 async function handleDownloadScreenshot() {
     try {
-        const targetNode = document.getElementById('app-content');
+        const targetNode = document.getElementById('schedule-workspace') || document.getElementById('app-content');
         const range = store.getDateRange();
         const filename = `random_duty_${range.month_str}.png`;
         await downloadScheduleScreenshot({ targetNode, filename });
-        showToast('success', '截圖成功', `已輸出高畫質圖檔：${filename}`);
+        showToast('success', '截圖成功', `已輸出高畫質班表圖檔：${filename}`);
     } catch (err) {
         console.error('Screenshot failed:', err);
         showToast('error', '輸出失敗', '截圖過程發生錯誤，請稍後重試。');
@@ -1218,7 +1585,7 @@ async function handleDownloadScreenshot() {
 }
 
 /**
- * Download Excel file via ExcellentExport.
+ * Download Excel file via ExcellentExport (including custom staff names if set).
  */
 async function handleDownloadExcel() {
     const range = store.getDateRange();
@@ -1233,6 +1600,7 @@ async function handleDownloadExcel() {
                 monthSpan: state.monthSpan,
                 monthStr: range.month_str,
                 dutiesByDate: check.dutiesByDate,
+                formatPerson: (p) => personLabel(p, false),
             });
             showToast('success', '匯出成功', `已下載 Excel 值班表：${outName}`);
         } catch (err) {
@@ -1262,6 +1630,75 @@ async function handleDownloadExcel() {
 }
 
 /**
+ * Export complete JSON backup file.
+ */
+function handleExportJsonBackup() {
+    const range = store.getDateRange();
+    const filename = exportScheduleBackupJson(
+        {
+            preferences: loadPreferences(),
+            draft: store.toDraftPayload(),
+        },
+        range.month_str
+    );
+    showToast('success', '備份已匯出', `已下載設定與班表備份檔：${filename}`);
+}
+
+/**
+ * Import JSON backup file and restore preferences + schedule state.
+ */
+async function handleImportJsonFile(e) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    try {
+        const { preferences, draft } = await parseScheduleBackupFile(file);
+        store.pushUndo();
+        if (preferences) {
+            const merged = savePreferences(preferences);
+            state.monthSpan = merged.mode_switch ? 2 : 1;
+            state.people = merged.inputPeopleSlider || 4;
+            state.useQodLimit = merged.use_qod_limit !== false;
+            state.qodLimit = merged.inputQodLimitSlider ?? 1;
+            state.useWeekHoursLimit = merged.use_week_hours_limit !== false;
+            state.weekHoursLimit = merged.inputWeekHoursLimitSlider || 80;
+            state.autoSaveDraft = merged.auto_save_draft !== false;
+            applyStatePreferencesToForm();
+        }
+        store.hydrateFromDraft(draft);
+        if (cal1) cal1.gotoDate(state.currentMonth.format('YYYY-MM-01'));
+        setMonthSpan(state.monthSpan, { persist: false });
+        syncAllViews({ includeOfficialHolidays: true });
+        triggerAutoSaveDraft();
+        showToast('success', '備份已匯入', '已成功還原排班資料與人員設定！');
+    } catch (err) {
+        console.error('Import JSON failed:', err);
+        showWarningModal(`無法讀取備份檔案：${err.message || '檔案格式錯誤'}`);
+    }
+}
+
+/**
+ * Sync UI sliders & switches from state.
+ */
+function applyStatePreferencesToForm() {
+    document.getElementById('inputPeopleSlider').value = state.people;
+    document.getElementById('people_val_badge').textContent = `${state.people} 人`;
+
+    document.getElementById('use_qod_limit').checked = state.useQodLimit;
+    document.getElementById('inputQodLimitSlider').value = state.qodLimit;
+    document.getElementById('inputQodLimitSlider').disabled = !state.useQodLimit;
+    document.getElementById('qod_val_badge').textContent = `${state.qodLimit} 次`;
+
+    document.getElementById('use_week_hours_limit').checked = state.useWeekHoursLimit;
+    document.getElementById('inputWeekHoursLimitSlider').value = state.weekHoursLimit;
+    document.getElementById('inputWeekHoursLimitSlider').disabled = !state.useWeekHoursLimit;
+    document.getElementById('week_hours_val_badge').textContent = `${state.weekHoursLimit} 小時`;
+
+    document.getElementById('auto_save_draft_switch').checked = state.autoSaveDraft;
+}
+
+/**
  * Clear all local storage preferences and drafts.
  */
 function handleClearAllStorage() {
@@ -1272,18 +1709,7 @@ function handleClearAllStorage() {
         confirmClass: 'btn-danger',
         onConfirm: () => {
             store.resetAll();
-
-            document.getElementById('inputPeopleSlider').value = 4;
-            document.getElementById('people_val_badge').textContent = '4 人';
-            document.getElementById('inputQodLimitSlider').value = 1;
-            document.getElementById('qod_val_badge').textContent = '1 次';
-            document.getElementById('use_qod_limit').checked = true;
-            document.getElementById('inputQodLimitSlider').disabled = false;
-            document.getElementById('inputWeekHoursLimitSlider').value = 80;
-            document.getElementById('week_hours_val_badge').textContent = '80 小時';
-            document.getElementById('use_week_hours_limit').checked = true;
-            document.getElementById('inputWeekHoursLimitSlider').disabled = false;
-            document.getElementById('auto_save_draft_switch').checked = true;
+            applyStatePreferencesToForm();
 
             if (cal1) cal1.gotoDate(state.currentMonth.format('YYYY-MM-01'));
             setMonthSpan(1, { persist: false });
@@ -1307,6 +1733,7 @@ function initApp() {
     calEventModal = new Modal(document.getElementById('calEventModal'));
     editPatternModal = new Modal(document.getElementById('editPatternModal'));
     dialogModal = new Modal(document.getElementById('dialogModal'));
+    staffNamesModal = new Modal(document.getElementById('staffNamesModal'));
 
     const prefs = loadPreferences();
     state.monthSpan = prefs.mode_switch ? 2 : 1;
@@ -1322,21 +1749,7 @@ function initApp() {
         store.hydrateFromDraft(draft);
     }
 
-    // Sync form controls with loaded preferences
-    document.getElementById('inputPeopleSlider').value = state.people;
-    document.getElementById('people_val_badge').textContent = `${state.people} 人`;
-
-    document.getElementById('use_qod_limit').checked = state.useQodLimit;
-    document.getElementById('inputQodLimitSlider').value = state.qodLimit;
-    document.getElementById('inputQodLimitSlider').disabled = !state.useQodLimit;
-    document.getElementById('qod_val_badge').textContent = `${state.qodLimit} 次`;
-
-    document.getElementById('use_week_hours_limit').checked = state.useWeekHoursLimit;
-    document.getElementById('inputWeekHoursLimitSlider').value = state.weekHoursLimit;
-    document.getElementById('inputWeekHoursLimitSlider').disabled = !state.useWeekHoursLimit;
-    document.getElementById('week_hours_val_badge').textContent = `${state.weekHoursLimit} 小時`;
-
-    document.getElementById('auto_save_draft_switch').checked = state.autoSaveDraft;
+    applyStatePreferencesToForm();
 
     // Listeners
     document.getElementById('mode_1m').addEventListener('change', () => setMonthSpan(1));
@@ -1345,16 +1758,19 @@ function initApp() {
     document.getElementById('inputPeopleSlider').addEventListener('input', (e) => {
         const val = parseInt(e.target.value, 10);
         state.people = val;
+        if (state.highlightedPerson && state.highlightedPerson > val) {
+            state.highlightedPerson = null;
+        }
         document.getElementById('people_val_badge').textContent = `${val} 人`;
         savePreferences({ inputPeopleSlider: val });
-        updateSuggestedPatterns();
+        syncAllViews();
     });
 
     document.getElementById('use_qod_limit').addEventListener('change', (e) => {
         state.useQodLimit = e.target.checked;
         document.getElementById('inputQodLimitSlider').disabled = !state.useQodLimit;
         savePreferences({ use_qod_limit: state.useQodLimit });
-        updateSummaryDuties(calculate_group_duties(store.getAllDuties()));
+        syncAllViews();
     });
 
     document.getElementById('inputQodLimitSlider').addEventListener('input', (e) => {
@@ -1362,14 +1778,14 @@ function initApp() {
         state.qodLimit = val;
         document.getElementById('qod_val_badge').textContent = `${val} 次`;
         savePreferences({ inputQodLimitSlider: val });
-        updateSummaryDuties(calculate_group_duties(store.getAllDuties()));
+        syncAllViews();
     });
 
     document.getElementById('use_week_hours_limit').addEventListener('change', (e) => {
         state.useWeekHoursLimit = e.target.checked;
         document.getElementById('inputWeekHoursLimitSlider').disabled = !state.useWeekHoursLimit;
         savePreferences({ use_week_hours_limit: state.useWeekHoursLimit });
-        updateSummaryDuties(calculate_group_duties(store.getAllDuties()));
+        syncAllViews();
     });
 
     document.getElementById('inputWeekHoursLimitSlider').addEventListener('input', (e) => {
@@ -1377,7 +1793,7 @@ function initApp() {
         state.weekHoursLimit = val;
         document.getElementById('week_hours_val_badge').textContent = `${val} 小時`;
         savePreferences({ inputWeekHoursLimitSlider: val });
-        updateSummaryDuties(calculate_group_duties(store.getAllDuties()));
+        syncAllViews();
     });
 
     document.getElementById('auto_save_draft_switch').addEventListener('change', (e) => {
@@ -1395,16 +1811,38 @@ function initApp() {
     document.getElementById('next_month').addEventListener('click', () => navigateMonth(1));
     document.getElementById('today_next_month').addEventListener('click', resetToDefaultMonth);
 
+    document.getElementById('btn_undo').addEventListener('click', handleUndo);
+    document.getElementById('btn_redo').addEventListener('click', handleRedo);
+    document.getElementById('active_person_filter_btn').addEventListener('click', () => toggleHighlightPerson(null));
+
+    // Global keyboard shortcuts for Undo / Redo (ignored when typing in inputs)
+    document.addEventListener('keydown', (e) => {
+        const tag = document.activeElement?.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+            e.preventDefault();
+            if (e.shiftKey) handleRedo();
+            else handleUndo();
+        } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'y') {
+            e.preventDefault();
+            handleRedo();
+        }
+    });
+
     document.querySelectorAll('input[name="eventProp"]').forEach(radio => {
-        radio.addEventListener('change', (e) => {
-            const isHoliday = e.target.value === 'eventPropHoliday';
-            document.getElementById('person_select_group').classList.toggle('d-none', isHoliday);
-            document.getElementById('holiday_input_group').classList.toggle('d-none', !isHoliday);
-        });
+        radio.addEventListener('change', updateEventModalFieldVisibility);
     });
 
     document.getElementById('btn_save_cal_event').addEventListener('click', handleSaveCalEvent);
     document.getElementById('btn_delete_cal_event').addEventListener('click', handleDeleteCalEvent);
+
+    // Staff names modal listeners
+    document.getElementById('btn_open_staff_names').addEventListener('click', openStaffNamesModal);
+    document.getElementById('btn_apply_bulk_staff').addEventListener('click', handleApplyBulkStaffNames);
+    document.getElementById('btn_save_staff_names').addEventListener('click', handleSaveStaffNames);
+    document.getElementById('btn_clear_staff_names').addEventListener('click', () => {
+        document.querySelectorAll('#staff_names_inputs .staff-name-input').forEach(el => { el.value = ''; });
+    });
 
     document.getElementById('func_get_holiday_condition').addEventListener('click', () => {
         const patternKey = document.getElementById('suggested_pattern_body')?.dataset?.patternKey;
@@ -1434,6 +1872,11 @@ function initApp() {
 
     document.getElementById('func_download_screenshot').addEventListener('click', handleDownloadScreenshot);
     document.getElementById('func_download_excel').addEventListener('click', handleDownloadExcel);
+    document.getElementById('func_export_json').addEventListener('click', handleExportJsonBackup);
+    document.getElementById('func_import_json').addEventListener('click', () => {
+        document.getElementById('json_import_file_input')?.click();
+    });
+    document.getElementById('json_import_file_input').addEventListener('change', handleImportJsonFile);
     document.getElementById('func_clear_local_storage').addEventListener('click', handleClearAllStorage);
 
     initCalendars();

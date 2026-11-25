@@ -8,11 +8,14 @@ import {
     get_drop_conflict_status,
     duty_colors,
     get_duty_color,
+    get_duty_text_color,
+    format_person_label,
     random_pattern,
     calculate_pattern_points,
     validate_presets_for_schedule,
     calculate_max_continuous_workdays,
     validate_duties_for_export,
+    detect_schedule_violations,
 } from '../src/js/lib_duties.js';
 
 describe('lib_duties', () => {
@@ -377,6 +380,46 @@ describe('lib_duties', () => {
             expect(res.missingDays).toBe(1);
             expect(res.duplicateDates).toEqual(['2026-10-01']);
             expect(res.dutiesByDate['2026-10-01']).toEqual([1, 2]);
+        });
+    });
+
+    describe('get_duty_text_color, format_person_label 與 detect_schedule_violations', () => {
+        it('高明度背景色（如人員 4 琥珀色 #FFA000 與人員 6 萊姆綠 #AFB42B）應回傳深色字以符合無障礙對比', () => {
+            expect(get_duty_text_color('#FFA000')).toBe('#0f172a');
+            expect(get_duty_text_color('#AFB42B')).toBe('#0f172a');
+            expect(get_duty_text_color('#2D6100')).toBe('#ffffff');
+            expect(get_duty_text_color('#20006E')).toBe('#ffffff');
+        });
+
+        it('format_person_label 應支援自訂人員名稱與預設編號 fallback', () => {
+            const names = { '1': '王醫師' };
+            expect(format_person_label(1, names)).toBe('1 王醫師');
+            expect(format_person_label(1, names, { full: true })).toBe('人員 1 (王醫師)');
+            expect(format_person_label(2, names)).toBe('2');
+            expect(format_person_label(2, names, { full: true })).toBe('人員 2');
+        });
+
+        it('detect_schedule_violations 應能即時標記手動微調產生的連值 (QD)、超 QOD、同日多人與不值衝突', () => {
+            const violations = detect_schedule_violations(
+                [
+                    ['2026-10-01', 1],
+                    ['2026-10-02', 1], // QD 連值
+                    ['2026-10-05', 2],
+                    ['2026-10-05', 3], // 同日多人
+                    ['2026-10-07', 2], // 與 10/05 產生 QOD (若上限為 0)
+                ],
+                {
+                    nonDuties: [['2026-10-07', 2]], // 同時違反不值設定
+                    useQodLimit: true,
+                    qodLimit: 0,
+                }
+            );
+
+            expect(violations.get('2026-10-01_1')).toContain('連續值班 (QD)');
+            expect(violations.get('2026-10-02_1')).toContain('連續值班 (QD)');
+            expect(violations.get('2026-10-05_2')).toContain('同日重複排入多人值班');
+            expect(violations.get('2026-10-07_2')).toContain('該日已設為不可值班');
+            expect(violations.get('2026-10-07_2')).toContain('超過 QOD 次數上限 (0 次)');
         });
     });
 });
