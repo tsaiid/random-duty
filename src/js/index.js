@@ -22,11 +22,17 @@ import {
     get_duty_color,
     random_pattern,
     calculate_pattern_points,
+    validate_presets_for_schedule,
+    calculate_max_continuous_workdays,
+    validate_duties_for_export,
 } from './lib_duties.js';
 import {
     less_than_qod_times,
     has_continuous_duties,
     less_than_max_week_hours,
+    prepare_week_hours_context,
+    calculate_person_week_hours,
+    has_boundary_conflict,
 } from './lib_filters.js';
 
 // Application State
@@ -174,16 +180,19 @@ function getCurrentDateRange() {
 }
 
 /**
- * Get all preset official + custom holiday date strings in the current range.
+ * Get all preset official + custom holiday date strings relevant to the current range
+ * (includes boundary ISO weeks and end_date so holiday-eve & boundary week hours are accurate).
  * @return {string[]} Array of date strings (YYYY-MM-DD).
  */
 function getPresetHolidays() {
     const holidays = new Set();
     const range = getCurrentDateRange();
+    const minDateStr = range.start_date.startOf('isoWeek').format('YYYY-MM-DD');
+    const maxDateStr = range.end_date.endOf('isoWeek').format('YYYY-MM-DD');
 
     // Custom holidays
     state.customHolidays.forEach(h => {
-        if (h.date >= range.start_date.format('YYYY-MM-DD') && h.date < range.end_date.format('YYYY-MM-DD')) {
+        if (h.date >= minDateStr && h.date <= maxDateStr) {
             holidays.add(h.date);
         }
     });
@@ -191,7 +200,7 @@ function getPresetHolidays() {
     // Cached official holidays
     state.cachedOfficialHolidays.forEach((val, id) => {
         if (!state.deletedHolidays.has(id)) {
-            if (val.date >= range.start_date.format('YYYY-MM-DD') && val.date < range.end_date.format('YYYY-MM-DD')) {
+            if (val.date >= minDateStr && val.date <= maxDateStr) {
                 holidays.add(val.date);
             }
         }
@@ -204,7 +213,7 @@ function getPresetHolidays() {
         events.forEach(evt => {
             if (evt.classNames.includes('gcal-holiday')) {
                 const dateStr = dayjs(evt.start).format('YYYY-MM-DD');
-                if (!state.deletedHolidays.has(evt.id)) {
+                if (!state.deletedHolidays.has(evt.id) && dateStr >= minDateStr && dateStr <= maxDateStr) {
                     holidays.add(dateStr);
                 }
             }
@@ -215,18 +224,24 @@ function getPresetHolidays() {
 }
 
 /**
- * Get all preset duties in current calendars.
+ * Get preset duties in calendars (scoped to current range by default).
+ * @param {Object} [options]
+ * @param {boolean} [options.inRangeOnly=true] Whether to filter to current month range.
  * @return {Array<[string, number]>} Array of [dateStr, personNo].
  */
-function getPresetDuties() {
+function getPresetDuties({ inRangeOnly = true } = {}) {
     const duties = [];
     const seen = new Set();
+    const range = getCurrentDateRange();
+    const startStr = range.start_date.format('YYYY-MM-DD');
+    const endStr = range.end_date.format('YYYY-MM-DD');
     const cals = [state.cal1, state.cal2].filter(Boolean);
     cals.forEach(cal => {
         const events = cal.getEvents();
         events.forEach(evt => {
             if (evt.classNames.includes('preset-duty-event')) {
                 const dateStr = dayjs(evt.start).format('YYYY-MM-DD');
+                if (inRangeOnly && (dateStr < startStr || dateStr >= endStr)) return;
                 const person = parseInt(evt.title, 10);
                 const key = `${dateStr}_${person}`;
                 if (!seen.has(key)) {
@@ -240,18 +255,24 @@ function getPresetDuties() {
 }
 
 /**
- * Get all preset non-duties in current calendars.
+ * Get preset non-duties in calendars (scoped to current range by default).
+ * @param {Object} [options]
+ * @param {boolean} [options.inRangeOnly=true] Whether to filter to current month range.
  * @return {Array<[string, number]>} Array of [dateStr, personNo].
  */
-function getPresetNonDuties() {
+function getPresetNonDuties({ inRangeOnly = true } = {}) {
     const nonDuties = [];
     const seen = new Set();
+    const range = getCurrentDateRange();
+    const startStr = range.start_date.format('YYYY-MM-DD');
+    const endStr = range.end_date.format('YYYY-MM-DD');
     const cals = [state.cal1, state.cal2].filter(Boolean);
     cals.forEach(cal => {
         const events = cal.getEvents();
         events.forEach(evt => {
             if (evt.classNames.includes('preset-non-duty-event')) {
                 const dateStr = dayjs(evt.start).format('YYYY-MM-DD');
+                if (inRangeOnly && (dateStr < startStr || dateStr >= endStr)) return;
                 const person = parseInt(evt.title, 10);
                 const key = `${dateStr}_${person}`;
                 if (!seen.has(key)) {
@@ -265,12 +286,17 @@ function getPresetNonDuties() {
 }
 
 /**
- * Get all duty events (both preset and auto-generated).
+ * Get duty events (both preset and auto-generated, scoped to current range by default).
+ * @param {Object} [options]
+ * @param {boolean} [options.inRangeOnly=true] Whether to filter to current month range.
  * @return {Array<[string, number]>} Array of [dateStr, personNo].
  */
-function getAllDuties() {
+function getAllDuties({ inRangeOnly = true } = {}) {
     const duties = [];
     const seen = new Set();
+    const range = getCurrentDateRange();
+    const startStr = range.start_date.format('YYYY-MM-DD');
+    const endStr = range.end_date.format('YYYY-MM-DD');
     const cals = [state.cal1, state.cal2].filter(Boolean);
 
     cals.forEach(cal => {
@@ -278,6 +304,7 @@ function getAllDuties() {
         events.forEach(evt => {
             if (evt.classNames.includes('duty-event') || evt.classNames.includes('preset-duty-event')) {
                 const dateStr = dayjs(evt.start).format('YYYY-MM-DD');
+                if (inRangeOnly && (dateStr < startStr || dateStr >= endStr)) return;
                 const person = parseInt(evt.title, 10);
                 const key = `${dateStr}_${person}`;
                 if (!seen.has(key)) {
@@ -289,6 +316,34 @@ function getAllDuties() {
     });
 
     return duties.sort((a, b) => a[0].localeCompare(b[0]));
+}
+
+/**
+ * Get existing adjacent-month duties in boundary ISO weeks / ±2 days around current range.
+ * Allows cross-month QD, QOD, and weekly work hours to incorporate saved adjacent months.
+ * @return {Array<[string, number]>}
+ */
+function getBoundaryDuties() {
+    const range = getCurrentDateRange();
+    const startStr = range.start_date.format('YYYY-MM-DD');
+    const endStr = range.end_date.format('YYYY-MM-DD');
+    const lastDate = range.end_date.subtract(1, 'day');
+    const leadingMin = dayjs(
+        Math.min(
+            range.start_date.startOf('isoWeek').valueOf(),
+            range.start_date.subtract(2, 'day').valueOf()
+        )
+    ).format('YYYY-MM-DD');
+    const trailingMax = dayjs(
+        Math.max(
+            lastDate.endOf('isoWeek').startOf('day').add(1, 'day').valueOf(),
+            range.end_date.add(2, 'day').valueOf()
+        )
+    ).format('YYYY-MM-DD');
+
+    return getAllDuties({ inRangeOnly: false }).filter(([dStr]) =>
+        (dStr >= leadingMin && dStr < startStr) || (dStr >= endStr && dStr < trailingMax)
+    );
 }
 
 /**
@@ -318,8 +373,8 @@ function triggerAutoSaveDraft() {
         currentMonth: state.currentMonth.format('YYYY-MM-01'),
         deletedHolidays: Array.from(state.deletedHolidays),
         customHolidays: state.customHolidays,
-        presetDuties: getPresetDuties(),
-        presetNonDuties: getPresetNonDuties(),
+        presetDuties: getPresetDuties({ inRangeOnly: false }),
+        presetNonDuties: getPresetNonDuties({ inRangeOnly: false }),
         generatedDuties: generatedDuties.sort((a, b) => a[0].localeCompare(b[0])),
         customPatterns: state.customPatterns || {},
     };
@@ -433,7 +488,10 @@ function updateSummaryDuties(groups) {
 
     const presetHolidays = getPresetHolidays();
     const dateRange = getCurrentDateRange();
-    const viewStartDate = state.cal1.view.activeStart ? dayjs(state.cal1.view.activeStart) : dateRange.start_date.startOf('isoWeek');
+    const startStr = dateRange.start_date.format('YYYY-MM-DD');
+    const totalDays = dateRange.end_date.diff(dateRange.start_date, 'day');
+    const boundaryDuties = getBoundaryDuties();
+    const weekContext = prepare_week_hours_context(startStr, totalDays, presetHolidays, true, boundaryDuties);
 
     // Build Table Header
     let html = `
@@ -454,66 +512,23 @@ function updateSummaryDuties(groups) {
                 <tbody>
     `;
 
-    // Calculate offs & continuous workdays
-    const groupsOffs = {};
-    for (const p in groups) {
-        if ({}.hasOwnProperty.call(groups, p)) {
-            groupsOffs[p] = { intervals: [], dates: [] };
-            for (let cur = dateRange.start_date.clone(); cur.isBefore(dateRange.end_date); cur = cur.add(1, 'day')) {
-                const dateStr = cur.format('YYYY-MM-DD');
-                if ((is_holiday(presetHolidays, dateStr) || is_weekend(dateStr)) && !groups[p].dates.includes(dateStr)) {
-                    groupsOffs[p].dates.push(dateStr);
-                }
-            }
-            const len = groupsOffs[p].dates.length;
-            for (let i = 0; i < len - 1; i++) {
-                const diff = dayjs(groupsOffs[p].dates[i + 1]).diff(dayjs(groupsOffs[p].dates[i]), 'day');
-                groupsOffs[p].intervals.push(diff);
-            }
-        }
-    }
+    const warnLimit = state.useWeekHoursLimit ? state.weekHoursLimit : 80;
+    const dangerLimit = state.useWeekHoursLimit ? state.weekHoursLimit : 88;
 
     for (const p in groups) {
         if ({}.hasOwnProperty.call(groups, p)) {
             const person = groups[p];
-            const totalWeeks = Math.floor(dateRange.end_date.diff(viewStartDate, 'day') / 7);
-            const weekHours = new Array(totalWeeks + 1).fill(0);
-            const weekHoursPmOff = new Array(totalWeeks + 1).fill(0);
-
-            // Baseline hours (8h for working days)
-            for (let cur = dateRange.start_date.clone(); cur.isBefore(dateRange.end_date); cur = cur.add(1, 'day')) {
-                const dateStr = cur.format('YYYY-MM-DD');
-                const weekNo = Math.floor(cur.diff(viewStartDate, 'day') / 7);
-                if (!is_holiday(presetHolidays, dateStr) && !is_weekend(dateStr)) {
-                    weekHours[weekNo] += 8;
-                    weekHoursPmOff[weekNo] += 8;
-                }
-            }
-
-            // Duty Dates & Hours computation
             const sortedDates = person.dates.slice().sort();
+            const { week_hours: weekHours, week_hours_pm_off: weekHoursPmOff } = calculate_person_week_hours(sortedDates, weekContext, p);
+
+            // Duty Dates badges
             const dateBadges = sortedDates.map(d => {
                 const cur = dayjs(d);
-                const nextStr = cur.add(1, 'day').format('YYYY-MM-DD');
-                const weekNo = Math.floor(cur.diff(viewStartDate, 'day') / 7);
-
                 let badgeClass = 'badge-ordinary';
                 if (is_holiday(presetHolidays, d) || is_weekend(d)) {
                     badgeClass = 'badge-holiday';
-                    weekHours[weekNo] += 24;
-                    weekHoursPmOff[weekNo] += 24;
                 } else if (is_friday(presetHolidays, d)) {
                     badgeClass = 'badge-friday';
-                    weekHours[weekNo] += 16;
-                    weekHoursPmOff[weekNo] += 16;
-                } else {
-                    weekHours[weekNo] += 16;
-                    weekHoursPmOff[weekNo] += 16;
-                }
-
-                // PM Off deduction
-                if (!is_holiday(presetHolidays, nextStr) && !is_weekend(nextStr)) {
-                    weekHoursPmOff[weekNo] -= 4;
                 }
 
                 const label = state.monthSpan === 1 ? cur.format('D') : cur.format('M/D');
@@ -524,9 +539,9 @@ function updateSummaryDuties(groups) {
             let qodCount = 0;
             const intervalBadges = person.intervals.map(i => {
                 let badgeClass = 'bg-light text-secondary border';
-                if (i === 2) {
+                if (i <= 2) {
                     badgeClass = 'badge-danger-soft';
-                    qodCount++;
+                    if (i === 2) qodCount++;
                 }
                 return `<span class="badge ${badgeClass} me-1 font-monospace">${i}</span>`;
             }).join('');
@@ -534,18 +549,17 @@ function updateSummaryDuties(groups) {
             // Week hours badge string
             const renderHoursBadges = (hoursArr) => hoursArr.map(h => {
                 let badgeClass = 'bg-light text-secondary border';
-                if (h > 88) badgeClass = 'badge-danger-soft';
-                else if (h >= 80) badgeClass = 'badge-warning-soft';
+                if (h > dangerLimit) badgeClass = 'badge-danger-soft';
+                else if (h >= warnLimit) badgeClass = 'badge-warning-soft';
                 return `<span class="badge ${badgeClass} font-monospace">${h}</span>`;
             }).join('');
 
-            const maxContinuous = groupsOffs[p].intervals.length > 0
-                ? Math.max(...groupsOffs[p].intervals) - 1
-                : 0;
+            const maxContinuous = calculate_max_continuous_workdays(sortedDates, startStr, totalDays, presetHolidays);
             const maxContinuousBadge = maxContinuous > 12
                 ? `<span class="badge badge-danger-soft font-monospace">${maxContinuous} 天</span>`
                 : `<span class="text-muted font-monospace">${maxContinuous} 天</span>`;
 
+            const qodExceeded = state.useQodLimit ? qodCount > state.qodLimit : qodCount > 0;
             const stdDev = person.std_dev ? person.std_dev.toFixed(2) : '0.00';
 
             html += `
@@ -558,7 +572,7 @@ function updateSummaryDuties(groups) {
                     <td class="text-center text-nowrap"><div class="hours-badges-group">${renderHoursBadges(weekHours)}</div></td>
                     <td class="text-center text-nowrap"><div class="hours-badges-group">${renderHoursBadges(weekHoursPmOff)}</div></td>
                     <td class="text-center text-nowrap">${maxContinuousBadge}</td>
-                    <td class="text-center text-nowrap"><span class="badge ${qodCount > 0 ? 'badge-danger-soft' : 'bg-light text-muted border'}">${qodCount}</span></td>
+                    <td class="text-center text-nowrap"><span class="badge ${qodExceeded ? 'badge-danger-soft' : (qodCount > 0 ? 'badge-warning-soft' : 'bg-light text-muted border')}">${qodCount}</span></td>
                     <td class="text-center text-nowrap font-monospace text-muted">${stdDev}</td>
                 </tr>
             `;
@@ -747,6 +761,39 @@ function openEventModal({ dateStr, event = null }) {
 }
 
 /**
+ * Collect same-day duty & non-duty events across calendars, optionally excluding a specific event ID.
+ * @param {string} dateStr Target date string (YYYY-MM-DD).
+ * @param {string} [excludeId=''] Event ID to exclude (e.g., event being edited or dragged).
+ * @return {Array<{ id: string, title: string, className: string[] }>}
+ */
+function getSameDayScheduleEvents(dateStr, excludeId = '') {
+    const result = [];
+    const seen = new Set();
+    const cals = [state.cal1, state.cal2].filter(Boolean);
+    cals.forEach(cal => {
+        cal.getEvents().forEach(evt => {
+            if (excludeId && evt.id === excludeId) return;
+            const evtDate = dayjs(evt.start).format('YYYY-MM-DD');
+            if (evtDate !== dateStr) return;
+            const isDuty = evt.classNames.includes('duty-event') || evt.classNames.includes('preset-duty-event');
+            const isNonDuty = evt.classNames.includes('preset-non-duty-event');
+            if (!isDuty && !isNonDuty) return;
+
+            const dedupKey = `${evt.id}_${evt.title}_${evt.classNames.join(',')}`;
+            if (!seen.has(dedupKey)) {
+                seen.add(dedupKey);
+                result.push({
+                    id: evt.id,
+                    title: evt.title,
+                    className: evt.classNames,
+                });
+            }
+        });
+    });
+    return result;
+}
+
+/**
  * Handle saving event from Event Modal.
  */
 function handleSaveCalEvent() {
@@ -755,25 +802,53 @@ function handleSaveCalEvent() {
     const existingId = document.getElementById('eventId').value;
 
     const cals = [state.cal1, state.cal2].filter(Boolean);
+    const sameDayOthers = getSameDayScheduleEvents(dateStr, existingId);
 
-    // Remove existing event if in editing mode
+    if (eventType === 'eventPropDuty') {
+        const person = parseInt(document.getElementById('eventTitleSelect').value, 10);
+        const existingDuty = sameDayOthers.find(
+            e => e.className.includes('duty-event') || e.className.includes('preset-duty-event')
+        );
+        if (existingDuty) {
+            showWarningModal(`該日期 (${dateStr}) 已有人員 ${existingDuty.title} 值班！`);
+            return;
+        }
+        const conflict = get_drop_conflict_status(
+            { title: String(person), className: ['preset-duty-event'] },
+            sameDayOthers
+        );
+        if (conflict) {
+            showWarningModal(conflict);
+            return;
+        }
+    } else if (eventType === 'eventPropNonduty') {
+        const person = parseInt(document.getElementById('eventTitleSelect').value, 10);
+        const conflict = get_drop_conflict_status(
+            { title: String(person), className: ['preset-non-duty-event'] },
+            sameDayOthers
+        );
+        if (conflict) {
+            showWarningModal(conflict);
+            return;
+        }
+    }
+
+    // Remove existing event only after validation succeeds
     if (existingId) {
         cals.forEach(cal => {
             const evt = cal.getEventById(existingId);
-            if (evt) evt.remove();
+            if (evt) {
+                const bgEvt = cal.getEventById(`${existingId}_bg`);
+                if (bgEvt) bgEvt.remove();
+                evt.remove();
+            }
         });
+        state.customHolidays = state.customHolidays.filter(h => h.id !== existingId);
     }
 
     if (eventType === 'eventPropDuty') {
         const person = parseInt(document.getElementById('eventTitleSelect').value, 10);
         const newId = generateEventId('preset_duty', dateStr, person);
-
-        // Check conflicts
-        const sameDayEvents = getAllDuties().filter(d => d[0] === dateStr);
-        if (sameDayEvents.length > 0 && !existingId) {
-            showWarningModal(`該日期 (${dateStr}) 已有人員 ${sameDayEvents[0][1]} 值班！`);
-            return;
-        }
 
         const newEvent = {
             id: newId,
@@ -920,31 +995,46 @@ function initCalendars() {
         eventDrop(info) {
             const evt = info.event;
             const targetDateStr = dayjs(evt.start).format('YYYY-MM-DD');
-            const targetDayDuties = getAllDuties().filter(d => d[0] === targetDateStr);
+            const sameDayOthers = getSameDayScheduleEvents(targetDateStr, evt.id);
 
-            // Reconstruct pseudo event object for conflict testing
             const pseudoEvent = {
                 title: evt.title,
                 className: evt.classNames,
             };
-            const pseudoSameDay = targetDayDuties.map(d => ({
-                title: String(d[1]),
-                className: ['duty-event'],
-            }));
 
-            const conflict = get_drop_conflict_status(pseudoEvent, pseudoSameDay);
+            const conflict = get_drop_conflict_status(pseudoEvent, sameDayOthers);
             if (conflict) {
                 showToast('warning', '班表衝突', conflict);
                 info.revert();
                 return;
             }
 
-            // Sync drop change to other calendar if 2-month mode
-            const otherCal = info.view.calendar === state.cal1 ? state.cal2 : state.cal1;
-            if (otherCal) {
-                const otherEvt = otherCal.getEventById(evt.id);
-                if (otherEvt) otherEvt.setStart(evt.start);
-            }
+            // Replace moved event with deterministic ID matching targetDateStr on both calendars
+            const person = parseInt(evt.title, 10);
+            const isPresetDuty = evt.classNames.includes('preset-duty-event');
+            const isNonDuty = evt.classNames.includes('preset-non-duty-event');
+            const typePrefix = isNonDuty ? 'preset_non_duty' : (isPresetDuty ? 'preset_duty' : 'duty');
+            const newId = generateEventId(typePrefix, targetDateStr, person);
+            const newEventObj = {
+                id: newId,
+                title: String(person),
+                start: targetDateStr,
+                allDay: true,
+                classNames: [...evt.classNames],
+                editable: true,
+                ...(isNonDuty ? {} : {
+                    backgroundColor: get_duty_color(person),
+                    borderColor: get_duty_color(person),
+                }),
+            };
+
+            const oldId = evt.id;
+            const cals = [state.cal1, state.cal2].filter(Boolean);
+            cals.forEach(cal => {
+                const existing = cal.getEventById(oldId);
+                if (existing) existing.remove();
+                cal.addEvent(newEventObj);
+            });
 
             updateSuggestedPatterns();
             updateSummaryDuties(calculate_group_duties(getAllDuties()));
@@ -1042,12 +1132,28 @@ function executeRandomDuty() {
 
     const patterns = JSON.parse(patternsData);
     const range = getCurrentDateRange();
+    const startStr = range.start_date.format('YYYY-MM-DD');
+    const endStr = range.end_date.format('YYYY-MM-DD');
     const totalDays = range.end_date.diff(range.start_date, 'day');
     const presetHolidays = getPresetHolidays();
     const presetDuties = getPresetDuties();
     const presetNonDuties = getPresetNonDuties();
+    const boundaryDuties = getBoundaryDuties();
 
-    // Verify preset constraints
+    // Verify preset staff range, duplicate duties, non-duty conflicts, and pattern quotas
+    const presetValidationError = validate_presets_for_schedule({
+        preset_duties: presetDuties,
+        preset_non_duties: presetNonDuties,
+        preset_holidays: presetHolidays,
+        patterns: patterns,
+        people: state.people,
+    });
+    if (presetValidationError) {
+        showWarningModal(presetValidationError);
+        return;
+    }
+
+    // Verify preset constraints (QD, QOD, boundary QD/QOD, weekly hours)
     const groups = calculate_group_duties(presetDuties);
     if (has_continuous_duties(groups)) {
         showWarningModal('目前已設定之預排班中出現連續值班狀況，請先調整後再執行自動排班！');
@@ -1057,12 +1163,17 @@ function executeRandomDuty() {
         showWarningModal(`目前預排班已超過 QOD 設定上限 (${state.qodLimit} 次)，請先調整！`);
         return;
     }
+    if (has_boundary_conflict(groups, boundaryDuties, state.useQodLimit, state.qodLimit)) {
+        showWarningModal('目前預排班與相鄰月份已排定之班表產生跨月連值或超過 QOD 上限，請先調整！');
+        return;
+    }
     if (state.useWeekHoursLimit) {
         const weekOpts = {
             preset_holidays: presetHolidays,
-            since_date_str: range.start_date.format('YYYY-MM-DD'),
+            since_date_str: startStr,
             total_days: totalDays,
             use_pm_off: true,
+            boundary_duties: boundaryDuties,
         };
         if (!less_than_max_week_hours(groups, state.weekHoursLimit, weekOpts)) {
             showWarningModal(`目前預排班已超過週工時上限 (${state.weekHoursLimit} 小時)，請先調整！`);
@@ -1085,8 +1196,9 @@ function executeRandomDuty() {
             duties: presetDuties,
             non_duties: presetNonDuties,
             holidays: presetHolidays,
+            boundary_duties: boundaryDuties,
         },
-        since_date_str: range.start_date.format('YYYY-MM-DD'),
+        since_date_str: startStr,
         total_days: totalDays,
         filters: {
             patterns: patterns,
@@ -1098,7 +1210,7 @@ function executeRandomDuty() {
     });
 
     state.worker.onmessage = (e) => {
-        const { status, msg, duties, groups: resultGroups } = e.data;
+        const { status, msg, duties } = e.data;
 
         if (status === 'running') {
             if (msgEl) msgEl.textContent = msg;
@@ -1107,12 +1219,15 @@ function executeRandomDuty() {
             state.worker.terminate();
             state.worker = null;
 
-            // Clear previous non-preset duties
+            // Clear previous non-preset duties ONLY within the current target month range
             const cals = [state.cal1, state.cal2].filter(Boolean);
             cals.forEach(cal => {
                 cal.getEvents().forEach(evt => {
                     if (evt.classNames.includes('duty-event') && !evt.classNames.includes('preset-duty-event')) {
-                        evt.remove();
+                        const evtDateStr = dayjs(evt.start).format('YYYY-MM-DD');
+                        if (evtDateStr >= startStr && evtDateStr < endStr) {
+                            evt.remove();
+                        }
                     }
                 });
             });
@@ -1142,7 +1257,7 @@ function executeRandomDuty() {
             const patternKey = `${range.month_str}_${state.monthSpan}_${state.people}`;
             state.customPatterns[patternKey] = patterns;
             updateSuggestedPatterns();
-            updateSummaryDuties(resultGroups || calculate_group_duties(getAllDuties()));
+            updateSummaryDuties(calculate_group_duties(getAllDuties()));
             triggerAutoSaveDraft();
             showToast('success', '自動排班完成', '已成功依設定條件產生公平排班表！');
         } else if (status === 'fail') {
@@ -1155,19 +1270,25 @@ function executeRandomDuty() {
 }
 
 /**
- * Clear generated duties from calendar.
+ * Clear generated duties from calendar (scoped to current month range).
  */
 function clearGeneratedDuties() {
     showConfirmModal({
         title: '清除排班',
-        message: '確定要清除所有自動產生之值班表嗎？（預先指定之值班、不值與自訂假日將完整保留）',
+        message: '確定要清除目前顯示月份所有自動產生之值班表嗎？（預先指定之值班、不值、自訂假日與其他月份班表將完整保留）',
         confirmText: '清除班表',
         onConfirm: () => {
+            const range = getCurrentDateRange();
+            const startStr = range.start_date.format('YYYY-MM-DD');
+            const endStr = range.end_date.format('YYYY-MM-DD');
             const cals = [state.cal1, state.cal2].filter(Boolean);
             cals.forEach(cal => {
                 cal.getEvents().forEach(evt => {
                     if (evt.classNames.includes('duty-event') && !evt.classNames.includes('preset-duty-event')) {
-                        evt.remove();
+                        const evtDateStr = dayjs(evt.start).format('YYYY-MM-DD');
+                        if (evtDateStr >= startStr && evtDateStr < endStr) {
+                            evt.remove();
+                        }
                     }
                 });
             });
@@ -1175,7 +1296,7 @@ function clearGeneratedDuties() {
             updateSuggestedPatterns();
             updateSummaryDuties(calculate_group_duties(getAllDuties()));
             triggerAutoSaveDraft();
-            showToast('info', '班表已清除', '已清除自動排班紀錄。');
+            showToast('info', '班表已清除', '已清除目前區間之自動排班紀錄。');
         },
     });
 }
@@ -1217,17 +1338,23 @@ function openPatternEditor() {
             <tbody>
     `;
 
+    const presetGroups = calculate_group_duties_status(
+        calculate_group_duties(getPresetDuties()),
+        presetHolidays
+    );
+
     patterns.forEach((pat, idx) => {
         const personNo = idx + 1;
         const pts = calculate_pattern_points(pat);
+        const pg = presetGroups[personNo] || { ordinary_count: 0, friday_count: 0, holiday_count: 0 };
         html += `
             <tr data-person="${personNo}">
                 <td class="fw-bold">
                     <span class="color-dot" style="background-color: ${get_duty_color(personNo)};"></span>人員 ${personNo}
                 </td>
-                <td><input type="number" min="0" class="form-control form-control-sm text-center duty_input input_o" value="${pat[0]}"></td>
-                <td><input type="number" min="0" class="form-control form-control-sm text-center duty_input input_f" value="${pat[1]}"></td>
-                <td><input type="number" min="0" class="form-control form-control-sm text-center duty_input input_h" value="${pat[2]}"></td>
+                <td><input type="number" min="${pg.ordinary_count}" class="form-control form-control-sm text-center duty_input input_o" value="${pat[0]}" title="已預排平日班：${pg.ordinary_count}"></td>
+                <td><input type="number" min="${pg.friday_count}" class="form-control form-control-sm text-center duty_input input_f" value="${pat[1]}" title="已預排週五班：${pg.friday_count}"></td>
+                <td><input type="number" min="${pg.holiday_count}" class="form-control form-control-sm text-center duty_input input_h" value="${pat[2]}" title="已預排假日班：${pg.holiday_count}"></td>
                 <td class="fw-bold text-primary points_cell font-monospace">${pts}</td>
             </tr>
         `;
@@ -1335,6 +1462,18 @@ function handleSavePattern() {
         return;
     }
 
+    const presetErr = validate_presets_for_schedule({
+        preset_duties: getPresetDuties(),
+        preset_non_duties: getPresetNonDuties(),
+        preset_holidays: presetHolidays,
+        patterns: newPatterns,
+        people: state.people,
+    });
+    if (presetErr) {
+        showWarningModal(presetErr);
+        return;
+    }
+
     const patternKey = document.getElementById('suggested_pattern_body')?.dataset?.patternKey;
     if (patternKey) {
         state.customPatterns = state.customPatterns || {};
@@ -1379,27 +1518,32 @@ async function handleDownloadScreenshot() {
  */
 async function handleDownloadExcel() {
     const range = getCurrentDateRange();
+    const startStr = range.start_date.format('YYYY-MM-DD');
     const duties = getAllDuties();
     const totalDays = range.end_date.diff(range.start_date, 'day');
+    const check = validate_duties_for_export(duties, startStr, totalDays);
 
-    if (duties.length < totalDays) {
+    if (!check.isComplete) {
+        const warnings = [];
+        if (check.missingDays > 0) {
+            warnings.push(`尚有 ${check.missingDays} 天未排定人員（已排 ${check.coveredDays} / ${totalDays} 天）`);
+        }
+        if (check.duplicateDates.length > 0) {
+            warnings.push(`有 ${check.duplicateDates.length} 天重複排入多位人員（${check.duplicateDates.join(', ')}）`);
+        }
         showConfirmModal({
-            title: '班表未排滿',
-            message: `目前排定天數 (${duties.length} 天) 少於該區間總天數 (${totalDays} 天)，確定仍要下載 Excel 嗎？`,
+            title: '班表檢核提醒',
+            message: `目前班表${warnings.join('，且')}，確定仍要下載 Excel 嗎？`,
             confirmText: '仍要下載',
             confirmClass: 'btn-warning',
-            onConfirm: () => doExportExcel(),
+            onConfirm: () => doExportExcel(check.dutiesByDate),
         });
     } else {
-        doExportExcel();
+        doExportExcel(check.dutiesByDate);
     }
 
-    async function doExportExcel() {
+    async function doExportExcel(dutiesByDate) {
         try {
-            // Build temporary HTML Table for ExcellentExport
-            const dutiesMap = {};
-            duties.forEach(([d, p]) => { dutiesMap[d] = p; });
-
             let tableHtml = '<table id="duties_datatable" class="d-none">';
             for (let i = 0; i < state.monthSpan; i++) {
                 const monthStart = state.currentMonth.clone().add(i, 'month').startOf('month');
@@ -1420,7 +1564,8 @@ async function handleDownloadExcel() {
                     // Content row (duties)
                     for (let day = 0; day < 7; day++) {
                         const dStr = cur.add(day, 'day').format('YYYY-MM-DD');
-                        const person = dutiesMap[dStr] || '';
+                        const peopleList = dutiesByDate[dStr];
+                        const person = peopleList ? peopleList.join(', ') : '';
                         tableHtml += `<td>${person}</td>`;
                     }
                     tableHtml += '</tr>';
@@ -1821,7 +1966,10 @@ function initApp() {
 
     // Pattern buttons
     document.getElementById('func_get_holiday_condition').addEventListener('click', () => {
-        state.customPatterns = null; // reset custom
+        const patternKey = document.getElementById('suggested_pattern_body')?.dataset?.patternKey;
+        if (patternKey && state.customPatterns) {
+            delete state.customPatterns[patternKey];
+        }
         updateSuggestedPatterns();
         triggerAutoSaveDraft();
         showToast('info', '排班樣式已更新', '已重新隨機生成排班樣式。');

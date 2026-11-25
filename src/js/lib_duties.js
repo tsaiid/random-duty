@@ -1,5 +1,5 @@
 import dayjs from './setup-dayjs.js';
-import { standardDeviation, randomIntFromInterval, multiIndexOf } from './private_functions.js';
+import { standardDeviation, randomIntFromInterval, multiIndexOf, shuffle } from './private_functions.js';
 import { is_holiday, is_friday, is_weekend } from './lib_holidays.js';
 
 /**
@@ -88,10 +88,10 @@ export function calculate_group_duties(duties, is_continuous_duties) {
     // is_continuous_duties is used in worker, reduce moment.js obj to enhance efficiency.
     is_continuous_duties = typeof is_continuous_duties !== 'undefined' ? is_continuous_duties : false;
 
-    var sorted_duties = duties.sort(function(a, b) {
+    var sorted_duties = duties.slice().sort(function(a, b) {
         // return moment(a[0], "YYYY-MM-DD") - moment(b[0], "YYYY-MM-DD")
         return a[0].localeCompare(b[0]);
-    }); // sort by date
+    }); // sort by date without mutating input array
 
     var groups = {};
     var total_people = 0;
@@ -310,6 +310,9 @@ export function random_pattern(people, ordinary_count, friday_count, holiday_cou
         }
     }
 
+    // Shuffle person order so residual / higher-point patterns are distributed fairly across all staff numbers
+    shuffle(patterns);
+
     return patterns;
 }
 
@@ -324,5 +327,140 @@ export function calculate_pattern_points(pattern) {
         return 0;
     }
     return (parseInt(pattern[0], 10) || 0) + (parseInt(pattern[1], 10) || 0) + (parseInt(pattern[2], 10) || 0) * 2;
+}
+
+/**
+ * Validate preset duties and non-duties against total staff count and target duty patterns.
+ * @param {Object} params Validation parameters.
+ * @param {Array<[string, number]>} params.preset_duties Preset duties in target range.
+ * @param {Array<[string, number]>} [params.preset_non_duties=[]] Preset non-duties in target range.
+ * @param {string[]} [params.preset_holidays=[]] Holiday date strings.
+ * @param {Array<number[]>} params.patterns Target [ordinary, friday, holiday] per person.
+ * @param {number} params.people Total active staff count.
+ * @return {string|null} Error message string if invalid, or null if valid.
+ */
+export function validate_presets_for_schedule({
+    preset_duties = [],
+    preset_non_duties = [],
+    preset_holidays = [],
+    patterns = [],
+    people,
+}) {
+    var dateToPerson = {};
+    var nonDutySet = new Set();
+
+    for (var n = 0; n < preset_non_duties.length; n++) {
+        var ndDate = preset_non_duties[n][0];
+        var ndPerson = parseInt(preset_non_duties[n][1], 10);
+        nonDutySet.add(ndDate + '_' + ndPerson);
+    }
+
+    for (var i = 0; i < preset_duties.length; i++) {
+        var dStr = preset_duties[i][0];
+        var pNo = parseInt(preset_duties[i][1], 10);
+
+        if (isNaN(pNo) || pNo < 1 || pNo > people) {
+            return '預排班中包含超出目前排班人數上限 (' + people + ' 人) 之人員 ' + preset_duties[i][1] + '，請先調整排班人數或移除該預排！';
+        }
+        if (dateToPerson[dStr] !== undefined && dateToPerson[dStr] !== pNo) {
+            return '日期 ' + dStr + ' 重複設定了多位預排值班人員！';
+        }
+        dateToPerson[dStr] = pNo;
+
+        if (nonDutySet.has(dStr + '_' + pNo)) {
+            return '日期 ' + dStr + ' 之預排值班人員 ' + pNo + ' 同時被設為不可值班！';
+        }
+    }
+
+    if (Array.isArray(patterns) && patterns.length >= people) {
+        var groups = calculate_group_duties_status(calculate_group_duties(preset_duties, false), preset_holidays);
+        for (var p = 1; p <= people; p++) {
+            var g = groups[p];
+            if (!g) continue;
+            var pat = patterns[p - 1];
+            if (!pat) continue;
+            if (g.ordinary_count > pat[0]) {
+                return '人員 ' + p + ' 之預排平日班數 (' + g.ordinary_count + ' 班) 已超過目前排班樣式配額 (' + pat[0] + ' 班)，請先點擊建議排班樣式「更新」或「修改」調整配額！';
+            }
+            if (g.friday_count > pat[1]) {
+                return '人員 ' + p + ' 之預排週五班數 (' + g.friday_count + ' 班) 已超過目前排班樣式配額 (' + pat[1] + ' 班)，請先點擊建議排班樣式「更新」或「修改」調整配額！';
+            }
+            if (g.holiday_count > pat[2]) {
+                return '人員 ' + p + ' 之預排假日班數 (' + g.holiday_count + ' 班) 已超過目前排班樣式配額 (' + pat[2] + ' 班)，請先點擊建議排班樣式「更新」或「修改」調整配額！';
+            }
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Calculate maximum consecutive working days (regular weekdays + weekend/holiday duties) for a person.
+ * @param {string[]} duty_dates Duty date strings for the person.
+ * @param {string} start_date_str Range start date (YYYY-MM-DD).
+ * @param {number} total_days Number of days in range.
+ * @param {string[]} [preset_holidays=[]] Holiday date strings.
+ * @return {number} Maximum consecutive working days.
+ */
+export function calculate_max_continuous_workdays(duty_dates, start_date_str, total_days, preset_holidays = []) {
+    var dutySet = new Set(duty_dates || []);
+    var streak = 0;
+    var maxStreak = 0;
+    var cur = dayjs(start_date_str);
+
+    for (var i = 0; i < total_days; i++) {
+        var dStr = cur.format('YYYY-MM-DD');
+        var isOffDay = (is_holiday(preset_holidays, dStr) || is_weekend(dStr)) && !dutySet.has(dStr);
+        if (!isOffDay) {
+            streak++;
+            if (streak > maxStreak) {
+                maxStreak = streak;
+            }
+        } else {
+            streak = 0;
+        }
+        cur = cur.add(1, 'day');
+    }
+
+    return maxStreak;
+}
+
+/**
+ * Validate schedule completeness and detect duplicate same-day assignments before export.
+ * @param {Array<[string, number]>} duties Array of [dateStr, personNo].
+ * @param {string} start_date_str Range start date (YYYY-MM-DD).
+ * @param {number} total_days Total days expected in range.
+ * @return {{ isComplete: boolean, coveredDays: number, missingDays: number, duplicateDates: string[], dutiesByDate: Object }}
+ */
+export function validate_duties_for_export(duties, start_date_str, total_days) {
+    var start = dayjs(start_date_str);
+    var endStr = start.add(total_days, 'day').format('YYYY-MM-DD');
+    var dutiesByDate = {};
+    var duplicateDatesSet = new Set();
+
+    (duties || []).forEach(function(item) {
+        var dStr = item[0];
+        var pNo = item[1];
+        if (dStr >= start_date_str && dStr < endStr) {
+            if (!dutiesByDate[dStr]) {
+                dutiesByDate[dStr] = [pNo];
+            } else {
+                dutiesByDate[dStr].push(pNo);
+                duplicateDatesSet.add(dStr);
+            }
+        }
+    });
+
+    var coveredDays = Object.keys(dutiesByDate).length;
+    var missingDays = Math.max(0, total_days - coveredDays);
+    var duplicateDates = Array.from(duplicateDatesSet).sort();
+
+    return {
+        isComplete: missingDays === 0 && duplicateDates.length === 0,
+        coveredDays: coveredDays,
+        missingDays: missingDays,
+        duplicateDates: duplicateDates,
+        dutiesByDate: dutiesByDate,
+    };
 }
 

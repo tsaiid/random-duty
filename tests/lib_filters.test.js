@@ -4,7 +4,8 @@ import {
     has_continuous_duties,
     prepare_week_hours_context,
     calculate_person_week_hours,
-    less_than_max_week_hours
+    less_than_max_week_hours,
+    has_boundary_conflict,
 } from '../src/js/lib_filters.js';
 
 describe('lib_filters', () => {
@@ -95,6 +96,43 @@ describe('lib_filters', () => {
 
             const res = calculate_person_week_hours(['2026-10-08'], context);
             expect(res.week_hours_pm_off[1]).toBe(32 + 16);
+        });
+
+        it('月底恰為週日時不應產生多餘的 0 小時幽靈週，且週日值班之隔日週一 PM Off 應歸屬於下一週', () => {
+            // 2026-05-01 (週五) ~ 2026-05-31 (週日)，共 31 天，涵蓋 5 個日曆週 (index 0..4)
+            const mayCtx = prepare_week_hours_context('2026-05-01', 31, [], true);
+            expect(mayCtx.baseline_week_hours).toHaveLength(5);
+
+            // 2026-05-10 (週日, index 1) 值班：第 1 週應加滿 24h，隔日 05-11 (週一, index 2) 扣 4h PM Off
+            const res = calculate_person_week_hours(['2026-05-10'], mayCtx);
+            expect(res.week_hours[1]).toBe(40 + 24);
+            expect(res.week_hours_pm_off[1]).toBe(40 + 24);
+            expect(res.week_hours_pm_off[2]).toBe(40 - 4);
+        });
+
+        it('當存在上月交界週班表 (boundary_duties) 時應自動併計該交界週之基準工時與人員值班工時', () => {
+            // 2026-10-01 為週四；交界週為 09/28 (週一) ~ 10/04 (週日)
+            // 若傳入上月 09/28 人員 1 值班，則第 0 週應包含完整 09/28~10/02 五天基準 40h，並計入人員 1 之 09/28 值班 (+12h PM Off)
+            const ctx = prepare_week_hours_context('2026-10-01', 31, [], true, [['2026-09-28', 1]]);
+            expect(ctx.baseline_week_hours[0]).toBe(40);
+
+            const p1 = calculate_person_week_hours(['2026-10-03'], ctx, 1); // 10/03 (週六) +24h
+            expect(p1.week_hours_pm_off[0]).toBe(40 + 12 + 24); // 76h
+
+            const p2 = calculate_person_week_hours(['2026-10-03'], ctx, 2); // 人員 2 無上月該週值班
+            expect(p2.week_hours_pm_off[0]).toBe(40 + 24); // 64h
+        });
+    });
+
+    describe('has_boundary_conflict', () => {
+        it('應能攔截跨月交界處的連續值班 (QD) 與超額隔日班 (QOD)', () => {
+            const boundary = [['2026-10-31', 1], ['2026-10-30', 2]];
+            // 人員 1 排 11/01 -> 與 10/31 連值 (QD)
+            expect(has_boundary_conflict({ '1': { dates: ['2026-11-01'] } }, boundary, true, 1)).toBe(true);
+            // 人員 2 排 11/01, 11/03 -> 10/30, 11/01, 11/03 產生 2 次 QOD，超過上限 1 次
+            expect(has_boundary_conflict({ '2': { dates: ['2026-11-01', '2026-11-03'] } }, boundary, true, 1)).toBe(true);
+            // 合法班距
+            expect(has_boundary_conflict({ '1': { dates: ['2026-11-03'] }, '2': { dates: ['2026-11-01'] } }, boundary, true, 1)).toBe(false);
         });
     });
 

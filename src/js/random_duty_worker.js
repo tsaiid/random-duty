@@ -2,7 +2,7 @@ import dayjs from './setup-dayjs.js';
 import { shuffle } from './private_functions.js';
 import { get_preset_duty, calculate_group_duties_status, calculate_group_duties } from './lib_duties.js';
 import { is_holiday, is_weekend, is_friday } from './lib_holidays.js';
-import { less_than_qod_times, has_continuous_duties, less_than_max_week_hours, prepare_week_hours_context } from './lib_filters.js';
+import { less_than_qod_times, has_continuous_duties, less_than_max_week_hours, prepare_week_hours_context, has_boundary_conflict } from './lib_filters.js';
 
 var TEST_CONDITIONING_FUNCTION = false;
 
@@ -43,22 +43,30 @@ function generate_non_preset_duty_match_patterns(total_days, since_date_str, pre
     var tmp_duties_friday = [];
     var tmp_duties_holiday = [];
     var groups = calculate_group_duties_status(calculate_group_duties(presets.duties, false), presets.holidays);
+    var has_negative_residual = false;
     patterns.forEach(function(pattern, index) {
         var person_no = index + 1;
         var residual_count = 0;
         residual_count = (groups[person_no] !== undefined && groups[person_no].ordinary_count !== undefined ? pattern[0] - groups[person_no].ordinary_count : pattern[0]);
+        if (residual_count < 0) has_negative_residual = true;
         for (var i = 0; i < residual_count; i++) {
             tmp_duties_ordinary.push(person_no);
         }
         residual_count = (groups[person_no] !== undefined && groups[person_no].friday_count !== undefined ? pattern[1] - groups[person_no].friday_count : pattern[1]);
+        if (residual_count < 0) has_negative_residual = true;
         for (var i = 0; i < residual_count; i++) {
             tmp_duties_friday.push(person_no);
         }
         residual_count = (groups[person_no] !== undefined && groups[person_no].holiday_count !== undefined ? pattern[2] - groups[person_no].holiday_count : pattern[2]);
+        if (residual_count < 0) has_negative_residual = true;
         for (var i = 0; i < residual_count; i++) {
             tmp_duties_holiday.push(person_no);
         }
     });
+
+    if (has_negative_residual) {
+        return { error: '預排班數超過目前排班樣式配額，請重新更新或修改排班樣式後再試。' };
+    }
 
     var since_date = dayjs(since_date_str);
     for (var i = 0; i < total_days; i++) {
@@ -67,12 +75,15 @@ function generate_non_preset_duty_match_patterns(total_days, since_date_str, pre
         if (get_preset_duty(presets.duties, the_date) === undefined) {
             if (is_holiday(presets.holidays, the_date) || is_weekend(the_date)) {
                 duty = tmp_duties_holiday.pop();
+                if (duty === undefined) return { error: '假日班配額與實際天數不一致，請先更新建議排班樣式。' };
                 non_preset_duties.holiday.push([the_date, duty]);
             } else if (is_friday(presets.holidays, the_date)) {
                 duty = tmp_duties_friday.pop();
+                if (duty === undefined) return { error: '週五班配額與實際天數不一致，請先更新建議排班樣式。' };
                 non_preset_duties.friday.push([the_date, duty]);
             } else {
                 duty = tmp_duties_ordinary.pop();
+                if (duty === undefined) return { error: '平日班配額與實際天數不一致，請先更新建議排班樣式。' };
                 non_preset_duties.ordinary.push([the_date, duty]);
             }
         }
@@ -80,10 +91,8 @@ function generate_non_preset_duty_match_patterns(total_days, since_date_str, pre
     }
 
     if (tmp_duties_ordinary.length > 0 || tmp_duties_friday.length > 0 || tmp_duties_holiday.length > 0) {
-        console.log('tmp_duties should not more than zero.');
+        return { error: '預排班人員超出人數範圍或樣式配額不一致，請重新更新排班樣式。' };
     }
-
-    // console.log(non_preset_duties.toString());
 
     return non_preset_duties;
 }
@@ -134,7 +143,7 @@ function is_match_non_duties(merged_duties, preset_non_duties) {
  * @param {Object} [week_hours_context] The precalculated context for week hours checking.
  * @return {boolean} Match or not.
  */
-function is_match_filters(group_duties, filters, week_hours_context) {
+function is_match_filters(group_duties, filters, week_hours_context, boundary_duties) {
     var use_qod_limit = filters.use_qod_limit;
     var qod_limit = filters.qod_limit;
     var use_week_hours_limit = filters.use_week_hours_limit;
@@ -145,6 +154,10 @@ function is_match_filters(group_duties, filters, week_hours_context) {
     }
 
     if (use_qod_limit && !less_than_qod_times(group_duties, qod_limit)) {
+        return false;
+    }
+
+    if (boundary_duties && boundary_duties.length > 0 && has_boundary_conflict(group_duties, boundary_duties, use_qod_limit, qod_limit)) {
         return false;
     }
 
@@ -181,10 +194,11 @@ function merge_preset_non_preset_duties(preset_duties, non_preset_duties) {
  */
 function random_duty(total_days, since_date_str, presets, filters) {
     var patterns = filters.patterns;
+    var boundary_duties = presets.boundary_duties || [];
 
     var week_hours_context;
     if (filters.use_week_hours_limit) {
-        week_hours_context = prepare_week_hours_context(since_date_str, total_days, presets.holidays, true);
+        week_hours_context = prepare_week_hours_context(since_date_str, total_days, presets.holidays, true, boundary_duties);
     }
 
     var status = 'success';
@@ -192,6 +206,14 @@ function random_duty(total_days, since_date_str, presets, filters) {
     var duties = [];
     var groups = {};
     var non_preset_duties = generate_non_preset_duty_match_patterns(total_days, since_date_str, presets, patterns);
+    if (non_preset_duties && non_preset_duties.error) {
+        return {
+            status: 'fail',
+            msg: non_preset_duties.error,
+            duties: [],
+            groups: {},
+        };
+    }
     var c = 0;
     while (1) {
         shuffle_duties(non_preset_duties);
@@ -199,7 +221,7 @@ function random_duty(total_days, since_date_str, presets, filters) {
         var merged_duties = merge_preset_non_preset_duties(presets.duties, non_preset_duties);
         // console.log(has_continuous_duties(merged_duties));
         var group_duties = calculate_group_duties(merged_duties, true);
-        if (is_match_non_duties(merged_duties, presets.non_duties) && is_match_filters(group_duties, filters, week_hours_context)) {
+        if (is_match_non_duties(merged_duties, presets.non_duties) && is_match_filters(group_duties, filters, week_hours_context, boundary_duties)) {
             duties = merged_duties;
             groups = group_duties;
             break;
