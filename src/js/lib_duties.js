@@ -317,6 +317,58 @@ export function random_pattern(people, ordinary_count, friday_count, holiday_cou
 }
 
 /**
+ * Generate a balanced duty pattern in O(people) without risking 100,000 main-thread retries.
+ * Tries bounded random sampling first for natural clinical variety, then falls back to an exact
+ * O(people) deterministic point-balancing construction.
+ * @param {number} people Number of staff.
+ * @param {number} ordinary_count Ordinary weekday count.
+ * @param {number} friday_count Friday / holiday-eve count.
+ * @param {number} holiday_count Weekend / holiday count.
+ * @return {Array<number[]>} Balanced 2D array of [ordinary, friday, holiday] per person.
+ */
+export function generate_balanced_pattern(people, ordinary_count, friday_count, holiday_count) {
+    for (var attempt = 0; attempt < 150; attempt++) {
+        var candidate = random_pattern(people, ordinary_count, friday_count, holiday_count, true);
+        if (candidate) {
+            return candidate;
+        }
+    }
+
+    // Exact O(people) deterministic point-balancing fallback
+    var baseH = Math.floor(holiday_count / people);
+    var remH = holiday_count % people;
+    var patterns = [];
+    for (var i = 0; i < people; i++) {
+        patterns.push([0, 0, i < remH ? baseH + 1 : baseH]);
+    }
+    shuffle(patterns);
+
+    // Distribute Friday shifts starting with lowest current points (2 * H)
+    patterns.sort(function(a, b) {
+        return (a[2] * 2) - (b[2] * 2);
+    });
+    var baseF = Math.floor(friday_count / people);
+    var remF = friday_count % people;
+    for (var f = 0; f < people; f++) {
+        patterns[f][1] = f < remF ? baseF + 1 : baseF;
+    }
+    shuffle(patterns);
+
+    // Distribute Ordinary shifts starting with lowest current points (2 * H + F)
+    patterns.sort(function(a, b) {
+        return (a[2] * 2 + a[1]) - (b[2] * 2 + b[1]);
+    });
+    var baseO = Math.floor(ordinary_count / people);
+    var remO = ordinary_count % people;
+    for (var o = 0; o < people; o++) {
+        patterns[o][0] = o < remO ? baseO + 1 : baseO;
+    }
+    shuffle(patterns);
+
+    return patterns;
+}
+
+/**
  * Calculate total duty points from [ordinary, friday, holiday] tuple.
  * Rule: ordinary = 1 pt, friday = 1 pt, holiday = 2 pts.
  * @param {number[]} pattern Tuple of [ordinary, friday, holiday].

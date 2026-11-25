@@ -19,6 +19,7 @@ export const DEFAULT_DRAFT = {
     presetNonDuties: [],            // [['YYYY-MM-DD', personNo]]
     generatedDuties: [],            // [['YYYY-MM-DD', personNo]]
     customPatterns: {},             // { 'YYYY-MM_span_people': [[o,f,h], ...] }
+    staffNames: {},                 // { '1': '王醫師', ... }
 };
 
 const LEGACY_COOKIE_KEYS = [
@@ -248,6 +249,7 @@ export function loadDraft(storage) {
             presetNonDuties: deduplicateDutyPairs(parsed.presetNonDuties),
             generatedDuties: deduplicateDutyPairs(parsed.generatedDuties),
             customPatterns: (parsed.customPatterns && typeof parsed.customPatterns === 'object') ? parsed.customPatterns : {},
+            staffNames: (parsed.staffNames && typeof parsed.staffNames === 'object') ? parsed.staffNames : {},
         };
     } catch {
         return null;
