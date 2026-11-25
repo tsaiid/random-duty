@@ -22,7 +22,7 @@ function run(command) {
     console.log(`\x1b[36m> ${command}\x1b[0m`); // Cyan color
     try {
         execSync(command, { stdio: 'inherit', cwd: projectRoot });
-    } catch (error) {
+    } catch {
         console.error(`\x1b[31mCommand failed: ${command}\x1b[0m`);
         process.exit(1);
     }

@@ -94,7 +94,6 @@ export function calculate_group_duties(duties, is_continuous_duties) {
     }); // sort by date without mutating input array
 
     var groups = {};
-    var total_people = 0;
 
     var do_group_duties = function(duty, index) {
         var person = duty[1];
@@ -104,7 +103,6 @@ export function calculate_group_duties(duties, is_continuous_duties) {
                 intervals: [],
                 dates: [],
             };
-            total_people++;
         }
 
         if (is_continuous_duties) {

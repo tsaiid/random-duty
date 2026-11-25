@@ -239,4 +239,18 @@ describe('lib_storage', () => {
             expect(stored.inputPeopleSlider).toBe(5);
         });
     });
+
+    describe('去重輔助函式邊界驗證', () => {
+        it('deduplicateDutyPairs 與 deduplicateCustomHolidays 在非陣列或異常元素輸入時應安全過濾', () => {
+            expect(deduplicateDutyPairs(null)).toEqual([]);
+            expect(deduplicateDutyPairs([['2026-11-01', 'abc'], ['2026-11-01', '2'], ['2026-11-01', 2]])).toEqual([
+                ['2026-11-01', 2],
+            ]);
+
+            expect(deduplicateCustomHolidays(undefined)).toEqual([]);
+            expect(deduplicateCustomHolidays([null, {}, { id: 'c1', date: '2026-11-10', title: '院慶' }, { id: 'c1', date: '2026-11-10', title: '院慶' }])).toEqual([
+                { id: 'c1', date: '2026-11-10', title: '院慶' },
+            ]);
+        });
+    });
 });
