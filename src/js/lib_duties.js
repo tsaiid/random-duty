@@ -1,5 +1,5 @@
 import dayjs from './setup-dayjs.js';
-import { standardDeviation, randomIntFromInterval, multiIndexOf } from './private_functions.js';
+import { standardDeviation, randomIntFromInterval, multiIndexOf, shuffle } from './private_functions.js';
 import { is_holiday, is_friday, is_weekend } from './lib_holidays.js';
 
 /**
@@ -88,13 +88,12 @@ export function calculate_group_duties(duties, is_continuous_duties) {
     // is_continuous_duties is used in worker, reduce moment.js obj to enhance efficiency.
     is_continuous_duties = typeof is_continuous_duties !== 'undefined' ? is_continuous_duties : false;
 
-    var sorted_duties = duties.sort(function(a, b) {
+    var sorted_duties = duties.slice().sort(function(a, b) {
         // return moment(a[0], "YYYY-MM-DD") - moment(b[0], "YYYY-MM-DD")
         return a[0].localeCompare(b[0]);
-    }); // sort by date
+    }); // sort by date without mutating input array
 
     var groups = {};
-    var total_people = 0;
 
     var do_group_duties = function(duty, index) {
         var person = duty[1];
@@ -104,7 +103,6 @@ export function calculate_group_duties(duties, is_continuous_duties) {
                 intervals: [],
                 dates: [],
             };
-            total_people++;
         }
 
         if (is_continuous_duties) {
@@ -256,6 +254,40 @@ export function get_duty_color(person) {
 }
 
 /**
+ * Compute accessible foreground text color (#0f172a or #ffffff) for a given HEX background color.
+ * Ensures WCAG AA+ readability on bright palettes such as Amber (#FFA000) and Lime (#AFB42B).
+ * @param {string} bgHex Background HEX string (#RRGGBB).
+ * @return {string} '#0f172a' for bright backgrounds, '#ffffff' for dark backgrounds.
+ */
+export function get_duty_text_color(bgHex) {
+    if (typeof bgHex !== 'string' || !/^#[0-9A-Fa-f]{6}$/.test(bgHex)) {
+        return '#ffffff';
+    }
+    var r = parseInt(bgHex.slice(1, 3), 16);
+    var g = parseInt(bgHex.slice(3, 5), 16);
+    var b = parseInt(bgHex.slice(5, 7), 16);
+    var luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+    return luminance > 155 ? '#0f172a' : '#ffffff';
+}
+
+/**
+ * Format display label for a staff member with optional custom name.
+ * @param {number|string} personNo Staff number (1..15).
+ * @param {Object<string, string>} [staffNames={}] Custom staff name mapping.
+ * @param {Object} [options={}] Formatting options.
+ * @param {boolean} [options.full=false] True for dropdowns ('人員 1 (王醫師)'), false for compact pills ('1 王醫師').
+ * @return {string} Formatted label.
+ */
+export function format_person_label(personNo, staffNames = {}, { full = false } = {}) {
+    var key = String(personNo);
+    var custom = staffNames && typeof staffNames[key] === 'string' ? staffNames[key].trim() : '';
+    if (full) {
+        return custom ? '人員 ' + key + ' (' + custom + ')' : '人員 ' + key;
+    }
+    return custom ? key + ' ' + custom : key;
+}
+
+/**
  * Generate a random duty pattern configuration balancing points across all people.
  * @param {number} people Number of people to participate.
  * @param {number} ordinary_count Total count of ordinary weekdays.
@@ -310,7 +342,81 @@ export function random_pattern(people, ordinary_count, friday_count, holiday_cou
         }
     }
 
+    // Shuffle person order so residual / higher-point patterns are distributed fairly across all staff numbers
+    shuffle(patterns);
+
     return patterns;
+}
+
+/**
+ * Generate a balanced duty pattern in O(people) without risking main-thread retry stalls.
+ * Distributes holidays, Fridays, and ordinary weekdays fairly across all staff while respecting
+ * any already-locked preset duty counts (min_per_person).
+ * @param {number} people Number of staff.
+ * @param {number} ordinary_count Ordinary weekday count.
+ * @param {number} friday_count Friday / holiday-eve count.
+ * @param {number} holiday_count Weekend / holiday count.
+ * @param {Array<number[]>} [min_per_person=null] Optional per-person minimum [minO, minF, minH] from presets.
+ * @return {Array<number[]>} Balanced 2D array of [ordinary, friday, holiday] per person.
+ */
+export function generate_balanced_pattern(people, ordinary_count, friday_count, holiday_count, min_per_person = null) {
+    // Initialize per-person slots with locked preset minimums (if any)
+    var rows = [];
+    var remO = ordinary_count;
+    var remF = friday_count;
+    var remH = holiday_count;
+
+    for (var i = 0; i < people; i++) {
+        var m = (Array.isArray(min_per_person) && Array.isArray(min_per_person[i])) ? min_per_person[i] : [0, 0, 0];
+        var mO = Math.max(0, parseInt(m[0], 10) || 0);
+        var mF = Math.max(0, parseInt(m[1], 10) || 0);
+        var mH = Math.max(0, parseInt(m[2], 10) || 0);
+        rows.push({ personIdx: i, tuple: [mO, mF, mH] });
+        remO -= mO;
+        remF -= mF;
+        remH -= mH;
+    }
+
+    // 1. Distribute remaining Holiday shifts (2 pts each) to those with fewest holidays first (random tie-break)
+    while (remH > 0) {
+        shuffle(rows);
+        rows.sort(function(a, b) {
+            return a.tuple[2] - b.tuple[2];
+        });
+        rows[0].tuple[2]++;
+        remH--;
+    }
+
+    // 2. Distribute remaining Friday shifts (1 pt each) to those with lowest current points & fewest Fridays (random tie-break)
+    while (remF > 0) {
+        shuffle(rows);
+        rows.sort(function(a, b) {
+            var ptsDiff = (a.tuple[2] * 2 + a.tuple[1] + a.tuple[0]) - (b.tuple[2] * 2 + b.tuple[1] + b.tuple[0]);
+            return ptsDiff !== 0 ? ptsDiff : (a.tuple[1] - b.tuple[1]);
+        });
+        rows[0].tuple[1]++;
+        remF--;
+    }
+
+    // 3. Distribute remaining Ordinary shifts (1 pt each) to equalize total points across all staff (random tie-break)
+    while (remO > 0) {
+        shuffle(rows);
+        rows.sort(function(a, b) {
+            var ptsDiff = (a.tuple[2] * 2 + a.tuple[1] + a.tuple[0]) - (b.tuple[2] * 2 + b.tuple[1] + b.tuple[0]);
+            return ptsDiff !== 0 ? ptsDiff : (a.tuple[0] - b.tuple[0]);
+        });
+        rows[0].tuple[0]++;
+        remO--;
+    }
+
+    // Restore original person index order (since random tie-breaking already randomized assignments)
+    rows.sort(function(a, b) {
+        return a.personIdx - b.personIdx;
+    });
+
+    return rows.map(function(r) {
+        return r.tuple;
+    });
 }
 
 /**
@@ -324,5 +430,262 @@ export function calculate_pattern_points(pattern) {
         return 0;
     }
     return (parseInt(pattern[0], 10) || 0) + (parseInt(pattern[1], 10) || 0) + (parseInt(pattern[2], 10) || 0) * 2;
+}
+
+/**
+ * Validate preset duties and non-duties against total staff count and target duty patterns.
+ * @param {Object} params Validation parameters.
+ * @param {Array<[string, number]>} params.preset_duties Preset duties in target range.
+ * @param {Array<[string, number]>} [params.preset_non_duties=[]] Preset non-duties in target range.
+ * @param {string[]} [params.preset_holidays=[]] Holiday date strings.
+ * @param {Array<number[]>} params.patterns Target [ordinary, friday, holiday] per person.
+ * @param {number} params.people Total active staff count.
+ * @return {string|null} Error message string if invalid, or null if valid.
+ */
+export function validate_presets_for_schedule({
+    preset_duties = [],
+    preset_non_duties = [],
+    preset_holidays = [],
+    patterns = [],
+    people,
+}) {
+    var dateToPerson = {};
+    var nonDutySet = new Set();
+
+    for (var n = 0; n < preset_non_duties.length; n++) {
+        var ndDate = preset_non_duties[n][0];
+        var ndPerson = parseInt(preset_non_duties[n][1], 10);
+        nonDutySet.add(ndDate + '_' + ndPerson);
+    }
+
+    for (var i = 0; i < preset_duties.length; i++) {
+        var dStr = preset_duties[i][0];
+        var pNo = parseInt(preset_duties[i][1], 10);
+
+        if (isNaN(pNo) || pNo < 1 || pNo > people) {
+            return '預排班中包含超出目前排班人數上限 (' + people + ' 人) 之人員 ' + preset_duties[i][1] + '，請先調整排班人數或移除該預排！';
+        }
+        if (dateToPerson[dStr] !== undefined && dateToPerson[dStr] !== pNo) {
+            return '日期 ' + dStr + ' 重複設定了多位預排值班人員！';
+        }
+        dateToPerson[dStr] = pNo;
+
+        if (nonDutySet.has(dStr + '_' + pNo)) {
+            return '日期 ' + dStr + ' 之預排值班人員 ' + pNo + ' 同時被設為不可值班！';
+        }
+    }
+
+    if (Array.isArray(patterns) && patterns.length >= people) {
+        var groups = calculate_group_duties_status(calculate_group_duties(preset_duties, false), preset_holidays);
+        for (var p = 1; p <= people; p++) {
+            var g = groups[p];
+            if (!g) continue;
+            var pat = patterns[p - 1];
+            if (!pat) continue;
+            if (g.ordinary_count > pat[0]) {
+                return '人員 ' + p + ' 之預排平日班數 (' + g.ordinary_count + ' 班) 已超過目前排班樣式配額 (' + pat[0] + ' 班)，請先點擊建議排班樣式「更新」或「修改」調整配額！';
+            }
+            if (g.friday_count > pat[1]) {
+                return '人員 ' + p + ' 之預排週五班數 (' + g.friday_count + ' 班) 已超過目前排班樣式配額 (' + pat[1] + ' 班)，請先點擊建議排班樣式「更新」或「修改」調整配額！';
+            }
+            if (g.holiday_count > pat[2]) {
+                return '人員 ' + p + ' 之預排假日班數 (' + g.holiday_count + ' 班) 已超過目前排班樣式配額 (' + pat[2] + ' 班)，請先點擊建議排班樣式「更新」或「修改」調整配額！';
+            }
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Calculate maximum consecutive working days (regular weekdays + weekend/holiday duties) for a person.
+ * @param {string[]} duty_dates Duty date strings for the person.
+ * @param {string} start_date_str Range start date (YYYY-MM-DD).
+ * @param {number} total_days Number of days in range.
+ * @param {string[]} [preset_holidays=[]] Holiday date strings.
+ * @return {number} Maximum consecutive working days.
+ */
+export function calculate_max_continuous_workdays(duty_dates, start_date_str, total_days, preset_holidays = []) {
+    var dutySet = new Set(duty_dates || []);
+    var streak = 0;
+    var maxStreak = 0;
+    var cur = dayjs(start_date_str);
+
+    for (var i = 0; i < total_days; i++) {
+        var dStr = cur.format('YYYY-MM-DD');
+        var isOffDay = (is_holiday(preset_holidays, dStr) || is_weekend(dStr)) && !dutySet.has(dStr);
+        if (!isOffDay) {
+            streak++;
+            if (streak > maxStreak) {
+                maxStreak = streak;
+            }
+        } else {
+            streak = 0;
+        }
+        cur = cur.add(1, 'day');
+    }
+
+    return maxStreak;
+}
+
+/**
+ * Validate schedule completeness and detect duplicate same-day assignments before export.
+ * @param {Array<[string, number]>} duties Array of [dateStr, personNo].
+ * @param {string} start_date_str Range start date (YYYY-MM-DD).
+ * @param {number} total_days Total days expected in range.
+ * @return {{ isComplete: boolean, coveredDays: number, missingDays: number, duplicateDates: string[], dutiesByDate: Object }}
+ */
+export function validate_duties_for_export(duties, start_date_str, total_days) {
+    var start = dayjs(start_date_str);
+    var endStr = start.add(total_days, 'day').format('YYYY-MM-DD');
+    var dutiesByDate = {};
+    var duplicateDatesSet = new Set();
+
+    (duties || []).forEach(function(item) {
+        var dStr = item[0];
+        var pNo = item[1];
+        if (dStr >= start_date_str && dStr < endStr) {
+            if (!dutiesByDate[dStr]) {
+                dutiesByDate[dStr] = [pNo];
+            } else {
+                dutiesByDate[dStr].push(pNo);
+                duplicateDatesSet.add(dStr);
+            }
+        }
+    });
+
+    var coveredDays = Object.keys(dutiesByDate).length;
+    var missingDays = Math.max(0, total_days - coveredDays);
+    var duplicateDates = Array.from(duplicateDatesSet).sort();
+
+    return {
+        isComplete: missingDays === 0 && duplicateDates.length === 0,
+        coveredDays: coveredDays,
+        missingDays: missingDays,
+        duplicateDates: duplicateDates,
+        dutiesByDate: dutiesByDate,
+    };
+}
+
+/**
+ * Detect schedule rule violations (same-day overlap, non-duty conflict, QD, QOD limit, week hours limit)
+ * so the calendar UI can visually flag manual adjustments that break constraints.
+ * @param {Array<[string, number]>} duties Current range duties.
+ * @param {Object} [options={}]
+ * @return {Map<string, string[]>} Map of "YYYY-MM-DD_person" -> array of violation reason strings.
+ */
+export function detect_schedule_violations(duties, {
+    nonDuties = [],
+    boundaryDuties = [],
+    useQodLimit = false,
+    qodLimit = 1,
+    useWeekHoursLimit = false,
+    maxWeekHours = 80,
+    weekContext = null,
+} = {}) {
+    var violations = new Map();
+    function addViolation(dStr, pNo, reason) {
+        var key = dStr + '_' + pNo;
+        if (!violations.has(key)) {
+            violations.set(key, []);
+        }
+        var arr = violations.get(key);
+        if (arr.indexOf(reason) === -1) {
+            arr.push(reason);
+        }
+    }
+
+    if (!duties || duties.length === 0) {
+        return violations;
+    }
+
+    // 1. Same-day multiple duties
+    var byDate = {};
+    duties.forEach(function(d) {
+        if (!byDate[d[0]]) byDate[d[0]] = [];
+        byDate[d[0]].push(d[1]);
+    });
+    for (var dKey in byDate) {
+        if ({}.hasOwnProperty.call(byDate, dKey) && byDate[dKey].length > 1) {
+            byDate[dKey].forEach(function(p) {
+                addViolation(dKey, p, '同日重複排入多人值班');
+            });
+        }
+    }
+
+    // 2. Non-duty conflicts
+    var nonDutySet = new Set(nonDuties.map(function(nd) { return nd[0] + '_' + nd[1]; }));
+    duties.forEach(function(d) {
+        if (nonDutySet.has(d[0] + '_' + d[1])) {
+            addViolation(d[0], d[1], '該日已設為不可值班');
+        }
+    });
+
+    // 3. QD & QOD (including boundary duties)
+    var combined = duties.concat(boundaryDuties || []);
+    var byPerson = {};
+    combined.forEach(function(d) {
+        var p = d[1];
+        if (!byPerson[p]) byPerson[p] = [];
+        if (byPerson[p].indexOf(d[0]) === -1) {
+            byPerson[p].push(d[0]);
+        }
+    });
+
+    var parsedQodLimit = parseInt(qodLimit, 10);
+    for (var pKey in byPerson) {
+        if ({}.hasOwnProperty.call(byPerson, pKey)) {
+            var dates = byPerson[pKey].sort();
+            var qodDates = [];
+            for (var i = 1; i < dates.length; i++) {
+                var diff = dayjs(dates[i]).diff(dayjs(dates[i - 1]), 'day');
+                if (diff === 1) {
+                    addViolation(dates[i - 1], pKey, '連續值班 (QD)');
+                    addViolation(dates[i], pKey, '連續值班 (QD)');
+                } else if (diff === 2) {
+                    qodDates.push([dates[i - 1], dates[i]]);
+                }
+            }
+            if (useQodLimit && !isNaN(parsedQodLimit) && qodDates.length > parsedQodLimit) {
+                qodDates.forEach(function(pair) {
+                    addViolation(pair[0], pKey, '超過 QOD 次數上限 (' + parsedQodLimit + ' 次)');
+                    addViolation(pair[1], pKey, '超過 QOD 次數上限 (' + parsedQodLimit + ' 次)');
+                });
+            }
+        }
+    }
+
+    // 4. Weekly work hours limit
+    if (useWeekHoursLimit && weekContext && weekContext.baseline_week_hours && weekContext.date_info_map) {
+        var maxH = parseInt(maxWeekHours, 10);
+        var groups = calculate_group_duties(duties, false);
+        for (var gp in groups) {
+            if ({}.hasOwnProperty.call(groups, gp)) {
+                var pDates = groups[gp].dates;
+                var hrs = weekContext.baseline_week_hours.slice();
+                var bArr = weekContext.person_boundary_hours_pm_off ? weekContext.person_boundary_hours_pm_off[String(gp)] : null;
+                if (bArr) {
+                    for (var bw = 0; bw < hrs.length; bw++) hrs[bw] += bArr[bw];
+                }
+                pDates.forEach(function(dStr) {
+                    var info = weekContext.date_info_map[dStr];
+                    if (info) {
+                        hrs[info.week_no] += info.duty_hours;
+                        if (info.pm_off_deduction > 0 && info.pm_off_week_no >= 0 && info.pm_off_week_no <= weekContext.total_weeks) {
+                            hrs[info.pm_off_week_no] -= info.pm_off_deduction;
+                        }
+                    }
+                });
+                pDates.forEach(function(dStr) {
+                    var info = weekContext.date_info_map[dStr];
+                    if (info && hrs[info.week_no] > maxH) {
+                        addViolation(dStr, gp, '該週工時 (' + hrs[info.week_no] + 'h) 超過上限 (' + maxH + 'h)');
+                    }
+                });
+            }
+        }
+    }
+
+    return violations;
 }
 

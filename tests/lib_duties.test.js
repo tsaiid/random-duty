@@ -8,8 +8,14 @@ import {
     get_drop_conflict_status,
     duty_colors,
     get_duty_color,
+    get_duty_text_color,
+    format_person_label,
     random_pattern,
     calculate_pattern_points,
+    validate_presets_for_schedule,
+    calculate_max_continuous_workdays,
+    validate_duties_for_export,
+    detect_schedule_violations,
 } from '../src/js/lib_duties.js';
 
 describe('lib_duties', () => {
@@ -268,6 +274,152 @@ describe('lib_duties', () => {
             expect(calculate_pattern_points(null)).toBe(0);
             expect(calculate_pattern_points([])).toBe(0);
             expect(calculate_pattern_points([1, 2])).toBe(0);
+        });
+    });
+
+    describe('random_pattern 公平性與 calculate_group_duties 不變異檢查', () => {
+        it('calculate_group_duties 不應原地改變傳入的陣列順序', () => {
+            const original = [
+                ['2026-10-05', 1],
+                ['2026-10-01', 2],
+                ['2026-10-03', 1],
+            ];
+            calculate_group_duties(original);
+            expect(original[0][0]).toBe('2026-10-05');
+            expect(original[1][0]).toBe('2026-10-01');
+        });
+
+        it('random_pattern 在有餘數時應均勻洗牌，避免最後一號人員固定承擔較多假日班', () => {
+            let firstHasMoreHolidays = 0;
+            let lastHasMoreHolidays = 0;
+            for (let run = 0; run < 120; run++) {
+                let pat = false;
+                while (!pat) {
+                    pat = random_pattern(4, 19, 4, 8, true);
+                }
+                if (pat[0][2] > pat[3][2]) firstHasMoreHolidays++;
+                if (pat[3][2] > pat[0][2]) lastHasMoreHolidays++;
+            }
+            expect(firstHasMoreHolidays).toBeGreaterThan(5);
+            expect(lastHasMoreHolidays).toBeGreaterThan(5);
+        });
+    });
+
+    describe('validate_presets_for_schedule', () => {
+        const patterns = [
+            [5, 1, 2],
+            [5, 1, 2],
+            [5, 1, 2],
+            [4, 1, 2],
+        ];
+
+        it('合法預排應回傳 null', () => {
+            const err = validate_presets_for_schedule({
+                preset_duties: [['2026-10-10', 1], ['2026-10-11', 2]],
+                preset_non_duties: [['2026-10-10', 2]],
+                preset_holidays: [],
+                patterns,
+                people: 4,
+            });
+            expect(err).toBeNull();
+        });
+
+        it('預排人員編號超過目前排班人數時應回傳錯誤訊息', () => {
+            const err = validate_presets_for_schedule({
+                preset_duties: [['2026-10-05', 6]],
+                patterns,
+                people: 4,
+            });
+            expect(err).toContain('超出目前排班人數上限');
+        });
+
+        it('預排值班與不值班同日同人衝突時應回傳錯誤訊息', () => {
+            const err = validate_presets_for_schedule({
+                preset_duties: [['2026-10-05', 2]],
+                preset_non_duties: [['2026-10-05', 2]],
+                patterns,
+                people: 4,
+            });
+            expect(err).toContain('同時被設為不可值班');
+        });
+
+        it('預排假日班數超過排班樣式配額時應回傳錯誤訊息', () => {
+            const err = validate_presets_for_schedule({
+                preset_duties: [['2026-10-03', 1], ['2026-10-10', 1], ['2026-10-17', 1]],
+                preset_holidays: [],
+                patterns,
+                people: 4,
+            });
+            expect(err).toContain('預排假日班數');
+        });
+    });
+
+    describe('calculate_max_continuous_workdays', () => {
+        it('應正確計入月初與月底的連上天數區段', () => {
+            // 2026-10-01 為週四；若 10/03 (週六) 值班，10/04 (週日) 放假 -> 月初連上 10/01~10/03 = 3 天
+            // 若 10/26 (週一)~10/31 (週六，且 10/31 值班) -> 月底連上 6 天
+            const maxDays = calculate_max_continuous_workdays(
+                ['2026-10-31'],
+                '2026-10-01',
+                31,
+                []
+            );
+            expect(maxDays).toBe(6);
+        });
+    });
+
+    describe('validate_duties_for_export', () => {
+        it('能偵測同日重複排班與漏排天數（避免僅檢查陣列長度誤判為排滿）', () => {
+            // 共 3 天區間：10/01 重複排 2 人、10/02 排 1 人、10/03 漏排 -> 總筆數為 3，但並未排滿
+            const res = validate_duties_for_export(
+                [['2026-10-01', 1], ['2026-10-01', 2], ['2026-10-02', 3]],
+                '2026-10-01',
+                3
+            );
+            expect(res.isComplete).toBe(false);
+            expect(res.missingDays).toBe(1);
+            expect(res.duplicateDates).toEqual(['2026-10-01']);
+            expect(res.dutiesByDate['2026-10-01']).toEqual([1, 2]);
+        });
+    });
+
+    describe('get_duty_text_color, format_person_label 與 detect_schedule_violations', () => {
+        it('高明度背景色（如人員 4 琥珀色 #FFA000 與人員 6 萊姆綠 #AFB42B）應回傳深色字以符合無障礙對比', () => {
+            expect(get_duty_text_color('#FFA000')).toBe('#0f172a');
+            expect(get_duty_text_color('#AFB42B')).toBe('#0f172a');
+            expect(get_duty_text_color('#2D6100')).toBe('#ffffff');
+            expect(get_duty_text_color('#20006E')).toBe('#ffffff');
+        });
+
+        it('format_person_label 應支援自訂人員名稱與預設編號 fallback', () => {
+            const names = { '1': '王醫師' };
+            expect(format_person_label(1, names)).toBe('1 王醫師');
+            expect(format_person_label(1, names, { full: true })).toBe('人員 1 (王醫師)');
+            expect(format_person_label(2, names)).toBe('2');
+            expect(format_person_label(2, names, { full: true })).toBe('人員 2');
+        });
+
+        it('detect_schedule_violations 應能即時標記手動微調產生的連值 (QD)、超 QOD、同日多人與不值衝突', () => {
+            const violations = detect_schedule_violations(
+                [
+                    ['2026-10-01', 1],
+                    ['2026-10-02', 1], // QD 連值
+                    ['2026-10-05', 2],
+                    ['2026-10-05', 3], // 同日多人
+                    ['2026-10-07', 2], // 與 10/05 產生 QOD (若上限為 0)
+                ],
+                {
+                    nonDuties: [['2026-10-07', 2]], // 同時違反不值設定
+                    useQodLimit: true,
+                    qodLimit: 0,
+                }
+            );
+
+            expect(violations.get('2026-10-01_1')).toContain('連續值班 (QD)');
+            expect(violations.get('2026-10-02_1')).toContain('連續值班 (QD)');
+            expect(violations.get('2026-10-05_2')).toContain('同日重複排入多人值班');
+            expect(violations.get('2026-10-07_2')).toContain('該日已設為不可值班');
+            expect(violations.get('2026-10-07_2')).toContain('超過 QOD 次數上限 (0 次)');
         });
     });
 });

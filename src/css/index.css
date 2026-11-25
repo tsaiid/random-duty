@@ -116,3 +116,25 @@
     border-radius: 0.75rem;
     box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
 }
+
+/* Interactive Person Row Highlighting */
+.person-row-interactive {
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+}
+
+.person-row-interactive:hover {
+    background-color: rgba(13, 110, 253, 0.06) !important;
+}
+
+.person-row-active {
+    background-color: rgba(13, 110, 253, 0.12) !important;
+    outline: 1px solid rgba(13, 110, 253, 0.35);
+}
+
+/* Multi-person checkbox pills in Event Modal */
+.person-check-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(115px, 1fr));
+    gap: 0.5rem;
+}
