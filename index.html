@@ -456,7 +456,7 @@
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body p-4">
-                    <h4 class="fw-bold mb-3">Random Duty Generator <span class="badge bg-primary fs-6">v2.0.0</span></h4>
+                    <h4 class="fw-bold mb-3">Random Duty Generator <span class="badge bg-primary fs-6">v2.1.0</span></h4>
                     <p class="text-secondary leading-relaxed">
                         專業醫療排班產生器，以亂數平衡排列與約束求解演算法自動產生公平值班表，支援預排班、排除不值班同仁與自訂國定假日。
                     </p>
@@ -541,7 +541,18 @@
                     </div>
                     <div class="timeline">
                         <div class="mb-4">
-                            <h5 class="fw-bold text-primary">2.0.0 – 2026-10-20</h5>
+                            <h5 class="fw-bold text-primary">2.1.0 – 2026-11-26</h5>
+                            <ul class="text-secondary small">
+                                <li>導入單一真相狀態層與高速混合式排班求解器（TypedArray 班距最佳化抽樣 + MRV 約束滿足回溯法），大幅提升高限制條件與雙月排班求解速度與班距均勻度。</li>
+                                <li>完整保留跨月份本機排班草稿不互蓋，並支援自動併入相鄰月份已排班表計算跨月連值 (QD)、QOD 與交界週工時。</li>
+                                <li>新增「人員名單設定」（支援批次貼上姓名），同步套用至日曆膠囊、下拉選單、統計表與 Excel 匯出。</li>
+                                <li>支援日曆跨日拖曳選取與多人複選批次設定不值班（預假），以及拖曳至他人班次一鍵互換班次 (Swap)。</li>
+                                <li>新增點擊人員列高亮篩選日曆視圖、即時違規紅框提醒、多步復原／重做 (<code>Ctrl/Cmd + Z</code>) 與 JSON 備份檔匯出入功能。</li>
+                                <li>最佳化班表截圖範圍與無障礙色票對比度，並按需引入前端元件縮減約 50% Vendor Bundle 體積。</li>
+                            </ul>
+                        </div>
+                        <div class="mb-4">
+                            <h6 class="fw-bold text-dark">2.0.0 – 2026-10-20</h6>
                             <ul class="text-secondary small">
                                 <li>全面架構現代化升級：原生 ES6+ (無 jQuery)、Bootstrap 5.3、FullCalendar v6、Day.js。</li>
                                 <li>新增本機排班草稿自動存檔機制 (`localStorage`) 與一鍵清除重置功能。</li>
